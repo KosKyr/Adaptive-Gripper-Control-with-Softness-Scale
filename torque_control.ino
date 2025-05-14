@@ -1,3 +1,4 @@
+
 #include "config.h"
 #include "TLE5012Sensor.h"
 #include "TLx493D_inc.hpp"
@@ -14,8 +15,11 @@ BLDCDriver3PWM driver = BLDCDriver3PWM(PIN_U, PIN_V, PIN_W, PIN_EN_U, PIN_EN_V, 
 // PID control for magnetic pressure
 struct PID {
   float Kp, Ki, Kd;
-  float prev_error = 0;
-  float integral = 0;
+  float prev_error;
+  float integral;
+
+  PID(float p, float i, float d)
+      : Kp(p), Ki(i), Kd(d), prev_error(0), integral(0) {}
 
   float compute(float setpoint, float measurement) {
     float error = setpoint - measurement;
@@ -26,7 +30,7 @@ struct PID {
   }
 };
 
-PID pressurePID = {1.0, 0.01, 0.05};
+PID pressurePID(1.0, 0.01, 0.05);
 float target_pressure = 2.0; // mT, safe max field
 
 // State + Mode
@@ -90,8 +94,8 @@ void setup() {
   motor.initFOC();
   Serial.println("Motor ready.");
 
-  pinMode(BUTTON1, INPUT);
-  pinMode(BUTTON2, INPUT);
+  pinMode(BUTTON_CLOSE, INPUT);
+  pinMode(BUTTON_OPEN, INPUT);
   pinMode(MODE_SWITCH_PIN, INPUT_PULLUP);
 
 #if ENABLE_COMMANDER
@@ -108,10 +112,10 @@ void setup() {
 void loop() {
   mode = digitalRead(MODE_SWITCH_PIN) == HIGH ? HARD : SOFT;
 
-  if (digitalRead(BUTTON1) == LOW) {
+  if (digitalRead(BUTTON_CLOSE) == LOW) {
     state = CLOSING;
     object_gripped = false;
-  } else if (digitalRead(BUTTON2) == LOW) {
+  } else if (digitalRead(BUTTON_OPEN) == LOW) {
     state = OPENING;
     object_gripped = false;
   } else if (state == CLOSING && object_gripped) {
@@ -141,6 +145,7 @@ void loop() {
     Serial.print(" mT | ΔMag: ");
     Serial.print(delta_field, 3);
     Serial.print(" | ");
+    Serial.println("");
 
     if (state == CLOSING && (stall || field_mag > target_pressure)) {
       object_gripped = true;
