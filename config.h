@@ -30,8 +30,8 @@
 #define PIN_SPI1_SCK   68
 
 // === Button Pins ===
-#define BUTTON_CLOSE 2
-#define BUTTON_OPEN 4
+//#define BUTTON1 2
+//#define BUTTON2 4
 #define MODE_SWITCH_PIN 7
 
 // === Magnetic Sensor Settings ===
