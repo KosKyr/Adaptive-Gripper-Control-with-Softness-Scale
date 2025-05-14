@@ -1,5 +1,6 @@
 #include <SimpleFOC.h>
 #include "TLE5012Sensor.h"
+#include "TLx493D_inc.hpp"
 #include "config.h"
 
 // SPI pins for TLE5012B sensor
@@ -15,10 +16,13 @@ TLE5012Sensor sensor(&SPI3W1, PIN_SPI1_SS0, PIN_SPI1_MISO, PIN_SPI1_MOSI, PIN_SP
 BLDCMotor motor = BLDCMotor(7, 0.24, 360, 0.000133);
 BLDCDriver3PWM driver = BLDCDriver3PWM(11, 10, 9, 6, 5, 3);
 
+// Haptic (magnetic pressure) sensor
+TLx493D hapticSensor = TLx493D();
+
 // Control variables
 float target_voltage = 0;
 float last_angle = 0;
-float velocity_threshold = 0.2; // Stricter object detection
+float velocity_threshold = 0.2;
 int stable_count = 0;
 const int stable_threshold = 40;
 bool object_gripped = false;
@@ -37,21 +41,17 @@ void setup() {
   Serial.begin(115200);
   SimpleFOCDebug::enable(&Serial);
 
-  // Sensor
   sensor.init();
   motor.linkSensor(&sensor);
 
-  // Driver
   driver.voltage_power_supply = 12;
   driver.init();
   motor.linkDriver(&driver);
 
-  // Motor configuration
   motor.foc_modulation = FOCModulationType::SpaceVectorPWM;
   motor.controller = MotionControlType::torque;
   motor.voltage_limit = 6;
 
-  // PID tuning
   motor.PID_velocity.P = 0.3;
   motor.PID_velocity.I = 5.0;
   motor.PID_velocity.D = 0.001;
@@ -63,11 +63,12 @@ void setup() {
 
   command.add('T', doTarget, "target voltage");
 
-#if ENABLE_MAGNETIC_SENSOR
-  Serial.println("3D magnetic sensor Calibration completed.");
   pinMode(BUTTON1, INPUT_PULLUP);
   pinMode(BUTTON2, INPUT_PULLUP);
-#endif
+
+  Wire.begin();
+  hapticSensor.begin();
+  Serial.println("✅ TLx493D haptic sensor initialized");
 
   Serial.println(F("Motor ready."));
   Serial.println(F("Use buttons to open/close gripper."));
@@ -84,32 +85,26 @@ void loop() {
   float velocity = (dt > 0) ? abs(current_angle - last_angle) / dt : 0.0;
   last_angle = current_angle;
 
-#if ENABLE_MAGNETIC_SENSOR
-  // Save the initial open angle once
   if (!angle_saved) {
     initial_open_angle = current_angle;
     angle_saved = true;
   }
 
-  // --- Handle return to initial position ---
   if (returning_to_open) {
     motor.controller = MotionControlType::angle;
     motor.move(initial_open_angle);
 
-    if (abs(current_angle - initial_open_angle) < 0.05) {  // ~3 degrees
+    if (abs(current_angle - initial_open_angle) < 0.05) {
       Serial.println("✅ Reached initial open position.");
       returning_to_open = false;
-
       motor.controller = MotionControlType::torque;
       target_voltage = 0;
     }
 
-    // skip rest of loop while returning
     command.run();
     return;
   }
 
-  // --- Button handling ---
   if (digitalRead(BUTTON1) == LOW && !object_gripped) {
     target_voltage = -3;  // close
   } else if (digitalRead(BUTTON2) == LOW && !returning_to_open) {
@@ -119,37 +114,53 @@ void loop() {
     returning_to_open = true;
     return;
   } else if (!object_gripped) {
-    target_voltage = 0;  // idle hold
+    target_voltage = 0;
   }
-#endif
 
-  // --- Stiffness-based grip detection ---
+  hapticSensor.updateData();
+  float bx = hapticSensor.getX();
+  float by = hapticSensor.getY();
+  float bz = hapticSensor.getZ();
+  float magnitude = sqrt(bx * bx + by * by + bz * bz);
+
+  Serial.print("B_x: "); Serial.print(bx, 2);
+  Serial.print("  B_y: "); Serial.print(by, 2);
+  Serial.print("  B_z: "); Serial.print(bz, 2);
+  Serial.print("  |B|: "); Serial.println(magnitude, 2);
+
   if (abs(target_voltage) > 0.2 && velocity < velocity_threshold) {
     stable_count++;
     if (stable_count > stable_threshold && !object_gripped) {
       object_gripped = true;
-      target_voltage = -0.3;  // firm hold torque
-      Serial.println("🟢 Object gripped. Holding firmly.");
 
-      // Softer PID for holding
+      if (magnitude < 80) {
+        target_voltage = -0.15;
+        Serial.println("🟢 Soft object detected.");
+      } else if (magnitude < 120) {
+        target_voltage = -0.25;
+        Serial.println("🟡 Medium object detected.");
+      } else {
+        target_voltage = -0.4;
+        Serial.println("🔴 Hard object detected.");
+      }
+
+      Serial.println("🟢 Object gripped. Holding firmly.");
       motor.PID_velocity.P = 0.15;
       motor.PID_velocity.I = 3.0;
       motor.PID_velocity.D = 0.01;
     }
-  } else if(digitalRead(BUTTON2) == LOW && returning_to_open){
+  } else if (digitalRead(BUTTON2) == LOW && returning_to_open) {
     stable_count = 0;
     if (object_gripped && abs(target_voltage) > 0.2) {
       object_gripped = false;
       Serial.println("🔄 Grip released. Resuming movement.");
 
-      // Restore default PID
       motor.PID_velocity.P = 0.3;
       motor.PID_velocity.I = 5.0;
       motor.PID_velocity.D = 0.001;
     }
   }
 
-  // --- Motor torque output ---
   if (!object_gripped) {
     motor.move(target_voltage);
   }
