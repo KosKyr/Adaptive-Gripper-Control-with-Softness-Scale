@@ -3,7 +3,6 @@
 
 // === Feature Toggles ===
 #define ENABLE_COMMANDER         1
-#define ENABLE_READ_ANGLE        0
 #define ENABLE_MAGNETIC_SENSOR   1
 
 // === Motor Configuration ===
@@ -28,11 +27,6 @@
 #define PIN_SPI1_MOSI            69
 #define PIN_SPI1_MISO            95
 #define PIN_SPI1_SCK             68
-
-// === Button & Switch Pins ===
-#define BUTTON1                  2
-#define BUTTON2                  4
-#define MODE_SWITCH_PIN          7
 
 // === Magnetic Sensor Settings ===
 #define CALIBRATION_SAMPLES      20
