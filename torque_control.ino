@@ -57,6 +57,7 @@ float hold_voltage = -0.3;
 float last_angle = 0;
 unsigned long last_check = 0;
 bool object_gripped = false;
+bool contact_started = false;
 float closing_start_angle = 0;
 const float HARDNESS_ANGLE_THRESHOLD = 0.05; // radians
 
@@ -124,7 +125,7 @@ void loop() {
   if (digitalRead(BUTTON1) == LOW) {
     state = CLOSING;
     object_gripped = false;
-    closing_start_angle = angleSensor.getSensorAngle();
+    contact_started = false;
   } else if (digitalRead(BUTTON2) == LOW) {
     state = OPENING;
     object_gripped = false;
@@ -151,15 +152,28 @@ void loop() {
     Serial.print(" mT | ΔMag: "); Serial.print(delta_field, 3);
     Serial.println();
 
-    if (state == CLOSING && field_mag > target_pressure) {
-      object_gripped = true;
-      float angle_change = abs(current_angle - closing_start_angle);
-      if (angle_change < HARDNESS_ANGLE_THRESHOLD) {
-        mode = HARD;
-        Serial.println("Hard object detected.");
-      } else {
-        mode = SOFT;
-        Serial.println("Soft object detected.");
+    if (state == CLOSING) {
+      if (!contact_started && field_mag > 0.3) {
+        contact_started = true;
+        closing_start_angle = current_angle;
+        Serial.println("Contact started, angle recorded.");
+      }
+
+      if (field_mag > target_pressure) {
+        object_gripped = true;
+
+        if (contact_started) {
+          float angle_change = abs(current_angle - closing_start_angle);
+          if (angle_change < HARDNESS_ANGLE_THRESHOLD) {
+            mode = HARD;
+            Serial.println("Hard object detected.");
+          } else {
+            mode = SOFT;
+            Serial.println("Soft object detected.");
+          }
+        } else {
+          Serial.println("Warning: object gripped but no contact_start recorded.");
+        }
       }
     }
 #endif
