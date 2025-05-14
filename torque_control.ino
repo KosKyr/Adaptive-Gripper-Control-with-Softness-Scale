@@ -17,18 +17,26 @@ struct PID {
   float Kp, Ki, Kd;
   float prev_error;
   float integral;
+  unsigned long last_time;
 
   PID(float p, float i, float d)
-      : Kp(p), Ki(i), Kd(d), prev_error(0), integral(0) {}
+      : Kp(p), Ki(i), Kd(d), prev_error(0), integral(0), last_time(0) {}
 
   float compute(float setpoint, float measurement) {
+    unsigned long now = millis();
+    float dt = (last_time == 0) ? 0.01 : (now - last_time) / 1000.0;
+    last_time = now;
+
     float error = setpoint - measurement;
-    integral += error;
-    float derivative = error - prev_error;
+    integral += error * dt;
+    float derivative = (dt > 0) ? (error - prev_error) / dt : 0;
     prev_error = error;
-    return Kp * error + Ki * integral + Kd * derivative;
+
+    float output = Kp * error + Ki * integral + Kd * derivative;
+    return output;
   }
 };
+
 
 PID pressurePID(1.0, 0.01, 0.05);
 float target_pressure = 2.0; // mT, safe max field
