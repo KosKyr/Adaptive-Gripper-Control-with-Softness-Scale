@@ -124,17 +124,28 @@ void setup() {
 }
 
 void loop() {
-  if (digitalRead(BUTTON1) == LOW) {
+  static bool last_button1 = HIGH;
+  static bool last_button2 = HIGH;
+
+  bool current_button1 = digitalRead(BUTTON1);
+  bool current_button2 = digitalRead(BUTTON2);
+
+  if (last_button1 == HIGH && current_button1 == LOW) {
     state = CLOSING;
     object_gripped = false;
     contact_started = false;
-  } else if (digitalRead(BUTTON2) == LOW) {
+  }
+
+  if (last_button2 == HIGH && current_button2 == LOW) {
     state = OPENING;
     object_gripped = false;
-  } else if (state == CLOSING && object_gripped) {
+  }
+
+  last_button1 = current_button1;
+  last_button2 = current_button2;
+
+  if (state == CLOSING && object_gripped) {
     state = GRIPPED;
-  } else if (state != GRIPPED) {
-    state = IDLE;
   }
 
   float current_angle = angleSensor.getSensorAngle();
