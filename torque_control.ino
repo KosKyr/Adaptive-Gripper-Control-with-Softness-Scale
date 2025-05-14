@@ -33,9 +33,14 @@ struct PID {
     prev_error = error;
 
     float output = Kp * error + Ki * integral + Kd * derivative;
+
+    Serial.print("PID error: "); Serial.print(error);
+    Serial.print(" | output: "); Serial.println(output);
+
     return output;
   }
 };
+
 
 
 PID pressurePID(1.0, 0.01, 0.05);
