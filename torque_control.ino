@@ -60,6 +60,7 @@ float last_angle = 0;
 unsigned long last_check = 0;
 bool object_gripped = false;
 bool contact_started = false;
+bool pid_active = false;
 float closing_start_angle = 0;
 const float HARDNESS_ANGLE_THRESHOLD = 0.05; // radians
 
@@ -134,11 +135,13 @@ void loop() {
     state = CLOSING;
     object_gripped = false;
     contact_started = false;
+    pid_active = false;
   }
 
   if (last_button2 == HIGH && current_button2 == LOW) {
     state = OPENING;
     object_gripped = false;
+    pid_active = false;
   }
 
   last_button1 = current_button1;
@@ -169,6 +172,7 @@ void loop() {
       if (!contact_started && field_mag > 0.3) {
         contact_started = true;
         closing_start_angle = current_angle;
+        pid_active = true;
         Serial.println("Contact started, angle recorded.");
       }
 
@@ -198,16 +202,20 @@ void loop() {
   switch (state) {
     case CLOSING: {
 #if ENABLE_MAGNETIC_SENSOR
-      float pid_out = pressurePID.compute(target_pressure, field_mag);
-      float desired = constrain(pid_out, -hard_limit, -minimum_torque);
-      if (desired < ramp_voltage - ramp_step) {
-        ramp_voltage -= ramp_step;
-      } else if (desired > ramp_voltage + ramp_step) {
-        ramp_voltage += ramp_step;
+      if (!pid_active) {
+        ramp_voltage = -minimum_torque;
       } else {
-        ramp_voltage = desired;
+        float pid_out = pressurePID.compute(target_pressure, field_mag);
+        float desired = constrain(pid_out, -hard_limit, -minimum_torque);
+        if (desired < ramp_voltage - ramp_step) {
+          ramp_voltage -= ramp_step;
+        } else if (desired > ramp_voltage + ramp_step) {
+          ramp_voltage += ramp_step;
+        } else {
+          ramp_voltage = desired;
+        }
+        ramp_voltage = constrain(ramp_voltage, -hard_limit, -minimum_torque);
       }
-      ramp_voltage = constrain(ramp_voltage, -hard_limit, -minimum_torque);
 #else
       ramp_voltage = -1.0;
 #endif
