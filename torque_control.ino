@@ -52,7 +52,9 @@ float ramp_voltage = 0.0;
 float ramp_step    = 0.05;
 float soft_limit   = 1.0;
 float hard_limit   = 3.0;
-float hold_voltage = -0.3;
+float hold_voltage_soft = -0.1;
+float hold_voltage_hard = -0.3;
+float minimum_torque = -0.3;  // new: minimum voltage for closing torque
 
 float last_angle = 0;
 unsigned long last_check = 0;
@@ -186,7 +188,7 @@ void loop() {
     case CLOSING: {
 #if ENABLE_MAGNETIC_SENSOR
       float pid_out = pressurePID.compute(target_pressure, field_mag);
-      float desired = constrain(pid_out, -hard_limit, 0.0f);
+      float desired = constrain(pid_out, -hard_limit, -minimum_torque);
       if (desired < ramp_voltage - ramp_step) {
         ramp_voltage -= ramp_step;
       } else if (desired > ramp_voltage + ramp_step) {
@@ -194,7 +196,7 @@ void loop() {
       } else {
         ramp_voltage = desired;
       }
-      ramp_voltage = constrain(ramp_voltage, -hard_limit, 0.0f);
+      ramp_voltage = constrain(ramp_voltage, -hard_limit, -minimum_torque);
 #else
       ramp_voltage = -1.0;
 #endif
@@ -204,7 +206,7 @@ void loop() {
       ramp_voltage = 2.0;
       break;
     case GRIPPED:
-      ramp_voltage = hold_voltage;
+      ramp_voltage = (mode == HARD) ? hold_voltage_hard : hold_voltage_soft;
       break;
     case IDLE:
     default:
