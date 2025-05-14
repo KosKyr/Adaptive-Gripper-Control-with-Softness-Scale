@@ -41,28 +41,21 @@ struct PID {
 PID pressurePID(1.0, 0.01, 0.05);
 float target_pressure = 2.0;  // mT, desired magnetic field
 
-// --- State + Mode ---
-enum GripperState { IDLE, CLOSING, OPENING, GRIPPED };
+// --- State ---
+enum GripperState { IDLE, CLOSING, APPLYING_FORCE, OPENING };
 GripperState state = IDLE;
-enum GripperMode { SOFT, HARD };
-GripperMode mode = SOFT;
 
 // --- Control variables ---
 float ramp_voltage = 0.0;
 float ramp_step    = 0.05;
-float soft_limit   = 1.0;
 float hard_limit   = 3.0;
 float hold_voltage_soft = -0.1;
 float hold_voltage_hard = -0.3;
-float minimum_torque = -0.3;  // new: minimum voltage for closing torque
+float minimum_torque = -0.3;
 
-float last_angle = 0;
-unsigned long last_check = 0;
-bool object_gripped = false;
-bool contact_started = false;
-bool pid_active = false;
-float closing_start_angle = 0;
-const float HARDNESS_ANGLE_THRESHOLD = 0.05; // radians
+bool contact_detected = false;
+bool button1_pressed = false;
+bool button2_pressed = false;
 
 #if ENABLE_COMMANDER
 Commander command = Commander(Serial);
@@ -111,7 +104,6 @@ void setup() {
 
   pinMode(BUTTON1, INPUT_PULLUP);
   pinMode(BUTTON2, INPUT_PULLUP);
-  pinMode(MODE_SWITCH_PIN, INPUT_PULLUP);
 
 #if ENABLE_COMMANDER
   command.add('T', onTarget, "target pressure");
@@ -132,104 +124,61 @@ void loop() {
   bool current_button2 = digitalRead(BUTTON2);
 
   if (last_button1 == HIGH && current_button1 == LOW) {
-    state = CLOSING;
-    object_gripped = false;
-    contact_started = false;
-    pid_active = false;
+    button1_pressed = true;
   }
-
   if (last_button2 == HIGH && current_button2 == LOW) {
-    state = OPENING;
-    object_gripped = false;
-    pid_active = false;
+    button2_pressed = true;
   }
-
   last_button1 = current_button1;
   last_button2 = current_button2;
 
-  if (state == CLOSING && object_gripped) {
-    state = GRIPPED;
-  }
-
-  float current_angle = angleSensor.getSensorAngle();
-  float field_mag = 0;
-
-  if (millis() - last_check > FIELD_SAMPLE_INTERVAL) {
+  float field_mag = 0.0;
 #if ENABLE_MAGNETIC_SENSOR
-    double x, y, z;
-    dut.setSensitivity(TLx493D_FULL_RANGE_e);
-    dut.getMagneticField(&x, &y, &z);
-    x -= xOffset; y -= yOffset; z -= zOffset;
-    field_mag = sqrt(x*x + y*y + z*z);
-    double delta_field = abs(field_mag - lastFieldMag);
-    lastFieldMag = field_mag;
-
-    Serial.print("Mag: "); Serial.print(field_mag, 3);
-    Serial.print(" mT | ΔMag: "); Serial.print(delta_field, 3);
-    Serial.println();
-
-    if (state == CLOSING) {
-      if (!contact_started && field_mag > 0.3) {
-        contact_started = true;
-        closing_start_angle = current_angle;
-        pid_active = true;
-        Serial.println("Contact started, angle recorded.");
-      }
-
-      if (field_mag > target_pressure) {
-        object_gripped = true;
-
-        if (contact_started) {
-          float angle_change = abs(current_angle - closing_start_angle);
-          if (angle_change < HARDNESS_ANGLE_THRESHOLD) {
-            mode = HARD;
-            Serial.println("Hard object detected.");
-          } else {
-            mode = SOFT;
-            Serial.println("Soft object detected.");
-          }
-        } else {
-          Serial.println("Warning: object gripped but no contact_start recorded.");
-        }
-      }
-    }
+  double x, y, z;
+  dut.setSensitivity(TLx493D_FULL_RANGE_e);
+  dut.getMagneticField(&x, &y, &z);
+  x -= xOffset; y -= yOffset; z -= zOffset;
+  field_mag = sqrt(x * x + y * y + z * z);
 #endif
-
-    last_angle = current_angle;
-    last_check = millis();
-  }
 
   switch (state) {
-    case CLOSING: {
-#if ENABLE_MAGNETIC_SENSOR
-      if (!pid_active) {
-        ramp_voltage = -minimum_torque;
-      } else {
-        float pid_out = pressurePID.compute(target_pressure, field_mag);
-        float desired = constrain(pid_out, -hard_limit, -minimum_torque);
-        if (desired < ramp_voltage - ramp_step) {
-          ramp_voltage -= ramp_step;
-        } else if (desired > ramp_voltage + ramp_step) {
-          ramp_voltage += ramp_step;
-        } else {
-          ramp_voltage = desired;
-        }
-        ramp_voltage = constrain(ramp_voltage, -hard_limit, -minimum_torque);
+    case IDLE:
+      if (button1_pressed) {
+        state = CLOSING;
+        button1_pressed = false;
+        contact_detected = false;
+        Serial.println("State: CLOSING");
+      } else if (button2_pressed) {
+        state = OPENING;
+        button2_pressed = false;
+        Serial.println("State: OPENING");
       }
-#else
-      ramp_voltage = -1.0;
-#endif
+      ramp_voltage = 0.0;
+      break;
+
+    case CLOSING:
+      if (field_mag > target_pressure) {
+        contact_detected = true;
+        state = APPLYING_FORCE;
+        Serial.println("Object detected, switching to PID control");
+      } else {
+        ramp_voltage = -minimum_torque;
+      }
+      break;
+
+    case APPLYING_FORCE: {
+      float pid_out = pressurePID.compute(target_pressure, field_mag);
+      ramp_voltage = constrain(pid_out, -hard_limit, 0);
       break;
     }
+
     case OPENING:
       ramp_voltage = 2.0;
-      break;
-    case GRIPPED:
-      ramp_voltage = (mode == HARD) ? hold_voltage_hard : hold_voltage_soft;
-      break;
-    case IDLE:
-    default:
-      ramp_voltage = 0.0;
+      if (!current_button2) {
+        state = IDLE;
+        ramp_voltage = 0.0;
+        Serial.println("Returned to IDLE");
+      }
       break;
   }
 
