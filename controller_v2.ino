@@ -3,28 +3,34 @@
 #include "TLx493D_inc.hpp"
 #include "config.h"
 
-// SPI pins for TLE5012B sensor
+// --- TLE5012B Setup (angle sensor) ---
 #define PIN_SPI1_SS0 94
 #define PIN_SPI1_MOSI 69
 #define PIN_SPI1_MISO 95
 #define PIN_SPI1_SCK 68
 
-// SPI sensor
 tle5012::SPIClass3W tle5012::SPI3W1(2);
 TLE5012Sensor sensor(&SPI3W1, PIN_SPI1_SS0, PIN_SPI1_MISO, PIN_SPI1_MOSI, PIN_SPI1_SCK);
 
-// Motor and driver
+// --- Motor & Driver ---
 BLDCMotor motor = BLDCMotor(7, 0.24, 360, 0.000133);
 BLDCDriver3PWM driver = BLDCDriver3PWM(11, 10, 9, 6, 5, 3);
 
-// TLx493D 3D magnetic sensor
+// --- TLx493D 3D Magnetic Sensor (pressure sensor) ---
 using namespace ifx::tlx493d;
 TLx493D_A2B6 dut(Wire1, TLx493D_IIC_ADDR_A0_e);
-const int CALIBRATION_SAMPLES = 20;
 double xOffset = 0, yOffset = 0, zOffset = 0;
 float magnetic_z = 0;
 
-// Grip detection tuning
+// --- Softness Classification Parameters ---
+float theta_start = 0;
+float softness_score = 0;
+bool evaluating_softness = false;
+const float GRIP_FORCE = -2.0;
+const float MAGNETIC_TRIGGER = 1.0;     // mT to start classification
+const float SOFTNESS_THRESHOLD = 5.0;   // score > this = soft
+
+// --- Control ---
 float target_voltage = 0;
 float last_angle = 0;
 float velocity_threshold = 0.2;
@@ -36,36 +42,9 @@ float initial_open_angle = 0;
 bool angle_saved = false;
 bool returning_to_open = false;
 
-// Grip force adaptation
-const float MAGNETIC_GRIP_THRESHOLD = 1.0; // in mT
-const float MIN_HOLD_TORQUE = -0.2;
-const float MAX_HOLD_TORQUE = -1.0;
-
-// Commander interface
+// --- Commander ---
 Commander command = Commander(Serial);
 void doTarget(char* cmd) { command.scalar(&target_voltage, cmd); }
-
-void calibrateSensor() {
-  double sumX = 0, sumY = 0, sumZ = 0, temp;
-  for (int i = 0; i < CALIBRATION_SAMPLES; ++i) {
-    double valX, valY, valZ;
-    dut.getMagneticFieldAndTemperature(&valX, &valY, &valZ, &temp);
-    sumX += valX;
-    sumY += valY;
-    sumZ += valZ;
-    delay(10);
-  }
-  xOffset = sumX / CALIBRATION_SAMPLES;
-  yOffset = sumY / CALIBRATION_SAMPLES;
-  zOffset = sumZ / CALIBRATION_SAMPLES;
-}
-
-// Dynamically adjust holding torque based on z-axis force
-float adjustHoldingTorque(float z) {
-  z = constrain(z, MAGNETIC_GRIP_THRESHOLD, 5.0); // Clamp
-  float normalized = (z - MAGNETIC_GRIP_THRESHOLD) / (5.0 - MAGNETIC_GRIP_THRESHOLD);
-  return MIN_HOLD_TORQUE + normalized * (MAX_HOLD_TORQUE - MIN_HOLD_TORQUE);
-}
 
 void setup() {
   Serial.begin(115200);
@@ -90,16 +69,22 @@ void setup() {
   motor.init();
   motor.initFOC();
 
-  dut.begin();
-  calibrateSensor();
-  Serial.println("3D magnetic sensor Calibration completed.");
-
+  dut.begin(); // no calibration needed
   pinMode(BUTTON1, INPUT_PULLUP);
   pinMode(BUTTON2, INPUT_PULLUP);
   command.add('T', doTarget, "target voltage");
 
-  Serial.println(F("Motor ready. Use buttons to open/close gripper."));
+  Serial.println("✅ Gripper ready. Press button 1 to grip and classify.");
   delay(1000);
+}
+
+// --- Dynamic holding torque based on pressure ---
+float adjustHoldingTorque(float z) {
+  const float MIN_HOLD = -0.2;
+  const float MAX_HOLD = -1.0;
+  z = constrain(z, MAGNETIC_TRIGGER, 5.0);
+  float norm = (z - MAGNETIC_TRIGGER) / (5.0 - MAGNETIC_TRIGGER);
+  return MIN_HOLD + norm * (MAX_HOLD - MIN_HOLD);
 }
 
 void loop() {
@@ -112,64 +97,91 @@ void loop() {
   float velocity = (dt > 0) ? abs(current_angle - last_angle) / dt : 0.0;
   last_angle = current_angle;
 
-  // --- Read magnetic sensor ---
+  // --- Read TLx493D Z-axis field ---
   double x, y, z;
   dut.setSensitivity(TLx493D_FULL_RANGE_e);
   dut.getMagneticField(&x, &y, &z);
-  x -= xOffset; y -= yOffset; z -= zOffset;
-  magnetic_z = z;
+  magnetic_z = z - zOffset;
 
-  Serial.print("Mag Z: "); Serial.println(magnetic_z, 3);
-
-  // Save open position once
+  // Save initial open angle
   if (!angle_saved) {
     initial_open_angle = current_angle;
     angle_saved = true;
   }
 
-  // --- Return to open position ---
+  // --- Return to initial open position ---
   if (returning_to_open) {
     motor.controller = MotionControlType::angle;
     motor.move(initial_open_angle);
+
     if (abs(current_angle - initial_open_angle) < 0.05) {
-      Serial.println("✅ Reached open.");
+      Serial.println("🔓 Returned to open position.");
       returning_to_open = false;
       motor.controller = MotionControlType::torque;
       target_voltage = 0;
     }
+
     command.run();
     return;
   }
 
-  // --- Button logic ---
+  // --- Button 1 (Grip + Classify) ---
   if (digitalRead(BUTTON1) == LOW && !object_gripped) {
-    target_voltage = -3;
-  } else if (digitalRead(BUTTON2) == LOW && !returning_to_open) {
-    Serial.println("🔁 Returning to open...");
-    object_gripped = false;
-    stable_count = 0;
-    returning_to_open = true;
-    return;
-  } else if (!object_gripped) {
-    target_voltage = 0;
-  }
+    if (!evaluating_softness) {
+      evaluating_softness = true;
+      theta_start = current_angle;
+      stable_count = 0;
+      Serial.println("🟡 Evaluating softness...");
+    }
 
-  // --- Grip detection using velocity + magnetic z ---
-  if (abs(target_voltage) > 0.2 && velocity < velocity_threshold && magnetic_z > MAGNETIC_GRIP_THRESHOLD) {
-    stable_count++;
-    if (stable_count > stable_threshold && !object_gripped) {
-      object_gripped = true;
-      Serial.println("🟢 Object gripped with magnetic feedback.");
-      motor.PID_velocity.P = 0.15;
-      motor.PID_velocity.I = 3.0;
-      motor.PID_velocity.D = 0.01;
+    target_voltage = GRIP_FORCE;
+
+    float angle_diff = abs(current_angle - theta_start);
+
+    if (magnetic_z > MAGNETIC_TRIGGER) {
+      softness_score = angle_diff / magnetic_z;
+      stable_count++;
+
+      if (stable_count > stable_threshold) {
+        if (softness_score > SOFTNESS_THRESHOLD) {
+          Serial.println("🟢 Object classified as: SOFT");
+        } else {
+          Serial.println("🔵 Object classified as: HARD");
+        }
+
+        object_gripped = true;
+        evaluating_softness = false;
+
+        // switch to dynamic hold
+        target_voltage = adjustHoldingTorque(magnetic_z);
+
+        // optional: softer PID
+        motor.PID_velocity.P = 0.15;
+        motor.PID_velocity.I = 3.0;
+        motor.PID_velocity.D = 0.01;
+      }
     }
   }
 
-  // --- Dynamic hold torque ---
-  if (object_gripped) {
-    target_voltage = adjustHoldingTorque(magnetic_z);
-    Serial.print("⚙️ Hold torque: "); Serial.println(target_voltage, 3);
+  // --- Button 2 (Open) ---
+  else if (digitalRead(BUTTON2) == LOW && !returning_to_open) {
+    Serial.println("🔁 Releasing object...");
+    object_gripped = false;
+    stable_count = 0;
+    returning_to_open = true;
+    evaluating_softness = false;
+
+    // restore default PID
+    motor.PID_velocity.P = 0.3;
+    motor.PID_velocity.I = 5.0;
+    motor.PID_velocity.D = 0.001;
+
+    return;
+  }
+
+  // --- Default idle behavior ---
+  else if (!object_gripped && !evaluating_softness) {
+    target_voltage = 0;
   }
 
   motor.move(target_voltage);
