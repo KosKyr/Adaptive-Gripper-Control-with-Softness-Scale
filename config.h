@@ -34,10 +34,8 @@
 #define BUTTON2 4
 #define MODE_SWITCH_PIN 7
 
-// === Magnetic Sensor Settings (TLx493D) ===
+// === Magnetic Sensor Settings ===
 #define CALIBRATION_SAMPLES 20
-#define GRIP_FIELD_THRESHOLD 0.6     // mT, total field magnitude
-#define GRIP_DELTA_THRESHOLD 0.2     // mT, rate of change
-#define FIELD_SAMPLE_INTERVAL 50     // ms
+#define FIELD_SAMPLE_INTERVAL 50  // milliseconds
 
-#endif
+#endif // CONFIG_H
