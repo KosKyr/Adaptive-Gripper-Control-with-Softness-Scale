@@ -1,5 +1,6 @@
 #include <SimpleFOC.h>
 #include "TLE5012Sensor.h"
+#include "TLx493D_inc.hpp"
 #include "config.h"
 
 // SPI pins for TLE5012B sensor
@@ -15,10 +16,16 @@ TLE5012Sensor sensor(&SPI3W1, PIN_SPI1_SS0, PIN_SPI1_MISO, PIN_SPI1_MOSI, PIN_SP
 BLDCMotor motor = BLDCMotor(7, 0.24, 360, 0.000133);
 BLDCDriver3PWM driver = BLDCDriver3PWM(11, 10, 9, 6, 5, 3);
 
+// TLx493D 3D magnetic sensor
+using namespace ifx::tlx493d;
+TLx493D_A2B6 dut(Wire1, TLx493D_IIC_ADDR_A0_e);
+const int CALIBRATION_SAMPLES = 20;
+double xOffset = 0, yOffset = 0, zOffset = 0;
+
 // Control variables
 float target_voltage = 0;
 float last_angle = 0;
-float velocity_threshold = 0.2; // Stricter object detection
+float velocity_threshold = 0.2;
 int stable_count = 0;
 const int stable_threshold = 40;
 bool object_gripped = false;
@@ -33,25 +40,38 @@ bool returning_to_open = false;
 Commander command = Commander(Serial);
 void doTarget(char* cmd) { command.scalar(&target_voltage, cmd); }
 
+void calibrateSensor() {
+  double sumX = 0, sumY = 0, sumZ = 0, temp;
+  for (int i = 0; i < CALIBRATION_SAMPLES; ++i) {
+    double valX, valY, valZ;
+    dut.getMagneticFieldAndTemperature(&valX, &valY, &valZ, &temp);
+    sumX += valX;
+    sumY += valY;
+    sumZ += valZ;
+    delay(10);
+  }
+  xOffset = sumX / CALIBRATION_SAMPLES;
+  yOffset = sumY / CALIBRATION_SAMPLES;
+  zOffset = sumZ / CALIBRATION_SAMPLES;
+}
+
 void setup() {
   Serial.begin(115200);
   SimpleFOCDebug::enable(&Serial);
 
-  // Sensor
+  // Angle sensor
   sensor.init();
   motor.linkSensor(&sensor);
 
-  // Driver
+  // Motor driver
   driver.voltage_power_supply = 12;
   driver.init();
   motor.linkDriver(&driver);
 
-  // Motor configuration
+  // Motor settings
   motor.foc_modulation = FOCModulationType::SpaceVectorPWM;
   motor.controller = MotionControlType::torque;
   motor.voltage_limit = 6;
-
-  // PID tuning
   motor.PID_velocity.P = 0.3;
   motor.PID_velocity.I = 5.0;
   motor.PID_velocity.D = 0.001;
@@ -61,16 +81,17 @@ void setup() {
   motor.init();
   motor.initFOC();
 
-  command.add('T', doTarget, "target voltage");
-
-#if ENABLE_MAGNETIC_SENSOR
+  // TLx493D sensor setup
+  dut.begin();
+  calibrateSensor();
   Serial.println("3D magnetic sensor Calibration completed.");
+
+  // Buttons
   pinMode(BUTTON1, INPUT_PULLUP);
   pinMode(BUTTON2, INPUT_PULLUP);
-#endif
 
-  Serial.println(F("Motor ready."));
-  Serial.println(F("Use buttons to open/close gripper."));
+  Serial.println(F("Motor ready. Use buttons to open/close gripper."));
+  command.add('T', doTarget, "target voltage");
   delay(1000);
 }
 
@@ -84,34 +105,43 @@ void loop() {
   float velocity = (dt > 0) ? abs(current_angle - last_angle) / dt : 0.0;
   last_angle = current_angle;
 
-#if ENABLE_MAGNETIC_SENSOR
-  // Save the initial open angle once
+  // Read and print magnetic field data
+  double x, y, z;
+  dut.setSensitivity(TLx493D_FULL_RANGE_e);
+  dut.getMagneticField(&x, &y, &z);
+  x -= xOffset;
+  y -= yOffset;
+  z -= zOffset;
+  Serial.print("Magnetic field [x,y,z] (mT): ");
+  Serial.print(x); Serial.print(", ");
+  Serial.print(y); Serial.print(", ");
+  Serial.println(z);
+
+  // Save initial open angle once
   if (!angle_saved) {
     initial_open_angle = current_angle;
     angle_saved = true;
   }
 
-  // --- Handle return to initial position ---
+  // Return to initial angle
   if (returning_to_open) {
     motor.controller = MotionControlType::angle;
     motor.move(initial_open_angle);
 
-    if (abs(current_angle - initial_open_angle) < 0.05) {  // ~3 degrees
+    if (abs(current_angle - initial_open_angle) < 0.05) {
       Serial.println("✅ Reached initial open position.");
       returning_to_open = false;
-
       motor.controller = MotionControlType::torque;
       target_voltage = 0;
     }
 
-    // skip rest of loop while returning
     command.run();
     return;
   }
 
-  // --- Button handling ---
+  // Button controls
   if (digitalRead(BUTTON1) == LOW && !object_gripped) {
-    target_voltage = -3;  // close
+    target_voltage = -3;
   } else if (digitalRead(BUTTON2) == LOW && !returning_to_open) {
     Serial.println("🔁 Returning to initial open position...");
     object_gripped = false;
@@ -119,37 +149,31 @@ void loop() {
     returning_to_open = true;
     return;
   } else if (!object_gripped) {
-    target_voltage = 0;  // idle hold
+    target_voltage = 0;
   }
-#endif
 
-  // --- Stiffness-based grip detection ---
+  // Grip detection
   if (abs(target_voltage) > 0.2 && velocity < velocity_threshold) {
     stable_count++;
     if (stable_count > stable_threshold && !object_gripped) {
       object_gripped = true;
-      target_voltage = -0.3;  // firm hold torque
+      target_voltage = -0.3;
       Serial.println("🟢 Object gripped. Holding firmly.");
-
-      // Softer PID for holding
       motor.PID_velocity.P = 0.15;
       motor.PID_velocity.I = 3.0;
       motor.PID_velocity.D = 0.01;
     }
-  } else if(digitalRead(BUTTON2) == LOW && returning_to_open){
+  } else if (digitalRead(BUTTON2) == LOW && returning_to_open) {
     stable_count = 0;
     if (object_gripped && abs(target_voltage) > 0.2) {
       object_gripped = false;
       Serial.println("🔄 Grip released. Resuming movement.");
-
-      // Restore default PID
       motor.PID_velocity.P = 0.3;
       motor.PID_velocity.I = 5.0;
       motor.PID_velocity.D = 0.001;
     }
   }
 
-  // --- Motor torque output ---
   if (!object_gripped) {
     motor.move(target_voltage);
   }
