@@ -11,7 +11,7 @@
 #define MOTOR_PHASE_RESISTANCE 0.24f
 #define MOTOR_KV 360
 #define MOTOR_PHASE_INDUCTANCE 0.000133f
-#define MOTOR_VOLTAGE_ALIGN 2.0f
+#define MOTOR_VOLTAGE_ALIGN 4.0f
 #define MOTOR_POWER_SUPPLY_VOLTAGE 12.0f
 #define MOTOR_VOLTAGE_LIMIT 6.0f
 
@@ -30,8 +30,8 @@
 #define PIN_SPI1_SCK   68
 
 // === Button Pins ===
-#define BUTTON1 2
-#define BUTTON2 4
+#define BUTTON_CLOSE 2
+#define BUTTON_OPEN 4
 #define MODE_SWITCH_PIN 7
 
 // === Magnetic Sensor Settings ===
