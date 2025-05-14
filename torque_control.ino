@@ -94,8 +94,8 @@ void setup() {
   motor.initFOC();
   Serial.println("Motor ready.");
 
-  pinMode(BUTTON_CLOSE, INPUT);
-  pinMode(BUTTON_OPEN, INPUT);
+  pinMode(BUTTON1, INPUT_PULLUP);
+  pinMode(BUTTON2, INPUT_PULLUP);
   pinMode(MODE_SWITCH_PIN, INPUT_PULLUP);
 
 #if ENABLE_COMMANDER
@@ -112,10 +112,10 @@ void setup() {
 void loop() {
   mode = digitalRead(MODE_SWITCH_PIN) == HIGH ? HARD : SOFT;
 
-  if (digitalRead(BUTTON_CLOSE) == LOW) {
+  if (digitalRead(BUTTON1) == LOW) {
     state = CLOSING;
     object_gripped = false;
-  } else if (digitalRead(BUTTON_OPEN) == LOW) {
+  } else if (digitalRead(BUTTON2) == LOW) {
     state = OPENING;
     object_gripped = false;
   } else if (state == CLOSING && object_gripped) {
@@ -147,7 +147,7 @@ void loop() {
     Serial.print(" | ");
     Serial.println("");
 
-    if (state == CLOSING && (stall || field_mag > target_pressure)) {
+    if (state == CLOSING && (field_mag > target_pressure)) {
       object_gripped = true;
       Serial.println("Object gripped via sensor");
     }
@@ -184,4 +184,6 @@ void loop() {
 #if ENABLE_COMMANDER
   command.run();
 #endif
+//Serial.print(digitalRead(BUTTON1));
+//Serial.print(digitalRead(BUTTON2));
 }
