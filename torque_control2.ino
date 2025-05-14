@@ -1,16 +1,8 @@
-#ifndef CONFIG_H
-#define CONFIG_H
-
-#define ENABLE_MAGNETIC_SENSOR true
-
-#define ENABLE_COMMANDER false
-
-#define ENABLE_READ_ANGLE false
-
-#endif // CONFIG_H
-
-
-
+/**
+ * Adaptive gripper with real-time PID adjustment based on object stiffness.
+ * Uses two buttons for control: one to close, one to open.
+ * PID values adjust automatically based on magnetic pressure data.
+ */
 #include "TLE5012Sensor.h"
 #include "TLx493D_inc.hpp"
 #include "config.h"
@@ -29,6 +21,7 @@ const int U = 11, V = 10, W = 9, EN_U = 6, EN_V = 5, EN_W = 3;
 BLDCDriver3PWM driver = BLDCDriver3PWM(U, V, W, EN_U, EN_V, EN_W);
 
 float target_voltage = -1;
+
 
 #if ENABLE_MAGNETIC_SENSOR
 using namespace ifx::tlx493d;
@@ -62,48 +55,23 @@ float readGripStrength() {
   return sqrt(x * x + y * y + z * z);
 }
 
-void autoTunePID() {
-  float bestP = 0, bestI = 0, bestD = 0;
-  float bestScore = 0;
-
-  for (float p = 0.2; p <= 3.0; p += 0.5) {
-    for (float i = 0.0; i <= 0.5; i += 0.1) {
-      for (float d = 0.0; d <= 0.5; d += 0.1) {
-
-        motor.PID_current_q.P = p;
-        motor.PID_current_q.I = i;
-        motor.PID_current_q.D = d;
-
-        motor.move(-3);
-        delay(300);
-
-        float score = readGripStrength();
-
-        Serial.print("P = "); Serial.print(p);
-        Serial.print(" I = "); Serial.print(i);
-        Serial.print(" D = "); Serial.print(d);
-        Serial.print(" Score = "); Serial.println(score);
-
-        if (score > bestScore) {
-          bestScore = score;
-          bestP = p;
-          bestI = i;
-          bestD = d;
-        }
-
-        motor.move(0);
-        delay(300);
-      }
-    }
+void adjustPIDbasedOnGrip(float grip) {
+  if (grip < 5.0) {
+    // Soft object
+    motor.PID_current_q.P = 0.5;
+    motor.PID_current_q.I = 0.01;
+    motor.PID_current_q.D = 0.001;
+  } else if (grip < 15.0) {
+    // Medium object
+    motor.PID_current_q.P = 1.2;
+    motor.PID_current_q.I = 0.05;
+    motor.PID_current_q.D = 0.005;
+  } else {
+    // Hard object
+    motor.PID_current_q.P = 2.0;
+    motor.PID_current_q.I = 0.1;
+    motor.PID_current_q.D = 0.01;
   }
-
-  motor.PID_current_q.P = bestP;
-  motor.PID_current_q.I = bestI;
-  motor.PID_current_q.D = bestD;
-
-  Serial.print("\n✅ Best PID values set:\nP = "); Serial.println(bestP);
-  Serial.print("I = "); Serial.println(bestI);
-  Serial.print("D = "); Serial.println(bestD);
 }
 
 void setup() {
@@ -139,30 +107,33 @@ void setup() {
 
 #if ENABLE_COMMANDER
   command.add('T', doTarget, "target voltage");
-  Serial.println(F("Set the target voltage using serial terminal:"));
 #endif
   delay(1000);
-  autoTunePID();
   Serial.println("Setup done.\n");
 }
 
 void loop() {
 #if ENABLE_MAGNETIC_SENSOR
   if (digitalRead(BUTTON1) == LOW) {
-    target_voltage = -3;
+    target_voltage = -3; // close
   } else if (digitalRead(BUTTON2) == LOW) {
-    target_voltage = 3;
+    target_voltage = 3; // open
   } else {
-    target_voltage = 0;
+    target_voltage = 0; // hold
   }
 
   double x, y, z;
   dut.setSensitivity(TLx493D_FULL_RANGE_e);
   dut.getMagneticField(&x, &y, &z);
   x -= xOffset; y -= yOffset; z -= zOffset;
-  Serial.print(x); Serial.print(",");
-  Serial.print(y); Serial.print(",");
-  Serial.println(z);
+
+  float gripStrength = sqrt(x * x + y * y + z * z);
+  adjustPIDbasedOnGrip(gripStrength);
+
+  Serial.print("Grip: "); Serial.print(gripStrength);
+  Serial.print("\tX: "); Serial.print(x);
+  Serial.print(" Y: "); Serial.print(y);
+  Serial.print(" Z: "); Serial.println(z);
 #endif
 
   tle5012Sensor.update();
