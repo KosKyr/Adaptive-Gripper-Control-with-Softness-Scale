@@ -1,18 +1,17 @@
-
 #include "config.h"
 #include "TLE5012Sensor.h"
 #include "TLx493D_inc.hpp"
 #include <SimpleFOC.h>
 
-// SPI + Angle Sensor
+// --- SPI + Angle Sensor ---
 tle5012::SPIClass3W tle5012::SPI3W1(2);
 TLE5012Sensor angleSensor(&SPI3W1, PIN_SPI1_SS0, PIN_SPI1_MISO, PIN_SPI1_MOSI, PIN_SPI1_SCK);
 
-// Motor + Driver
+// --- Motor + Driver ---
 BLDCMotor motor = BLDCMotor(MOTOR_POLE_PAIRS, MOTOR_PHASE_RESISTANCE, MOTOR_KV, MOTOR_PHASE_INDUCTANCE);
 BLDCDriver3PWM driver = BLDCDriver3PWM(PIN_U, PIN_V, PIN_W, PIN_EN_U, PIN_EN_V, PIN_EN_W);
 
-// PID control for magnetic pressure
+// --- PID for magnetic pressure ---
 struct PID {
   float Kp, Ki, Kd;
   float prev_error;
@@ -20,47 +19,46 @@ struct PID {
   unsigned long last_time;
 
   PID(float p, float i, float d)
-      : Kp(p), Ki(i), Kd(d), prev_error(0), integral(0), last_time(0) {}
+    : Kp(p), Ki(i), Kd(d), prev_error(0), integral(0), last_time(0) {}
 
   float compute(float setpoint, float measurement) {
     unsigned long now = millis();
-    float dt = (last_time == 0) ? 0.01 : (now - last_time) / 1000.0;
+    float dt = (last_time == 0) ? 0.01f : (now - last_time) / 1000.0f;
     last_time = now;
 
     float error = setpoint - measurement;
     integral += error * dt;
+    integral = constrain(integral, -10.0f, 10.0f);
+
     float derivative = (dt > 0) ? (error - prev_error) / dt : 0;
     prev_error = error;
 
     float output = Kp * error + Ki * integral + Kd * derivative;
-
-    Serial.print("PID error: "); Serial.print(error);
-    Serial.print(" | output: "); Serial.println(output);
-
     return output;
   }
 };
 
-
-
 PID pressurePID(1.0, 0.01, 0.05);
-float target_pressure = 2.0; // mT, safe max field
+float target_pressure = 2.0;  // mT, desired magnetic field
 
-// State + Mode
+// --- State + Mode ---
 enum GripperState { IDLE, CLOSING, OPENING, GRIPPED };
 GripperState state = IDLE;
 enum GripperMode { SOFT, HARD };
 GripperMode mode = SOFT;
 
+// --- Control variables ---
 float ramp_voltage = 0.0;
-float ramp_step = 0.05;
-float soft_limit = 1.0;
-float hard_limit = 3.0;
+float ramp_step    = 0.05;
+float soft_limit   = 1.0;
+float hard_limit   = 3.0;
 float hold_voltage = -0.3;
 
 float last_angle = 0;
 unsigned long last_check = 0;
 bool object_gripped = false;
+float closing_start_angle = 0;
+const float HARDNESS_ANGLE_THRESHOLD = 0.05; // radians
 
 #if ENABLE_COMMANDER
 Commander command = Commander(Serial);
@@ -123,11 +121,10 @@ void setup() {
 }
 
 void loop() {
-  mode = digitalRead(MODE_SWITCH_PIN) == HIGH ? HARD : SOFT;
-
   if (digitalRead(BUTTON1) == LOW) {
     state = CLOSING;
     object_gripped = false;
+    closing_start_angle = angleSensor.getSensorAngle();
   } else if (digitalRead(BUTTON2) == LOW) {
     state = OPENING;
     object_gripped = false;
@@ -141,9 +138,6 @@ void loop() {
   float field_mag = 0;
 
   if (millis() - last_check > FIELD_SAMPLE_INTERVAL) {
-    float angle_diff = abs(current_angle - last_angle);
-    bool stall = angle_diff < 0.002;
-
 #if ENABLE_MAGNETIC_SENSOR
     double x, y, z;
     dut.setSensitivity(TLx493D_FULL_RANGE_e);
@@ -153,16 +147,20 @@ void loop() {
     double delta_field = abs(field_mag - lastFieldMag);
     lastFieldMag = field_mag;
 
-    Serial.print("Mag: ");
-    Serial.print(field_mag, 3);
-    Serial.print(" mT | ΔMag: ");
-    Serial.print(delta_field, 3);
-    Serial.print(" | ");
-    Serial.println("");
+    Serial.print("Mag: "); Serial.print(field_mag, 3);
+    Serial.print(" mT | ΔMag: "); Serial.print(delta_field, 3);
+    Serial.println();
 
-    if (state == CLOSING && (field_mag > target_pressure)) {
+    if (state == CLOSING && field_mag > target_pressure) {
       object_gripped = true;
-      Serial.println("Object gripped via sensor");
+      float angle_change = abs(current_angle - closing_start_angle);
+      if (angle_change < HARDNESS_ANGLE_THRESHOLD) {
+        mode = HARD;
+        Serial.println("Hard object detected.");
+      } else {
+        mode = SOFT;
+        Serial.println("Soft object detected.");
+      }
     }
 #endif
 
@@ -171,14 +169,23 @@ void loop() {
   }
 
   switch (state) {
-    case CLOSING:
+    case CLOSING: {
 #if ENABLE_MAGNETIC_SENSOR
-      ramp_voltage = pressurePID.compute(target_pressure, field_mag);
-      ramp_voltage = constrain(ramp_voltage, -hard_limit, 0);
+      float pid_out = pressurePID.compute(target_pressure, field_mag);
+      float desired = constrain(pid_out, -hard_limit, 0.0f);
+      if (desired < ramp_voltage - ramp_step) {
+        ramp_voltage -= ramp_step;
+      } else if (desired > ramp_voltage + ramp_step) {
+        ramp_voltage += ramp_step;
+      } else {
+        ramp_voltage = desired;
+      }
+      ramp_voltage = constrain(ramp_voltage, -hard_limit, 0.0f);
 #else
       ramp_voltage = -1.0;
 #endif
       break;
+    }
     case OPENING:
       ramp_voltage = 2.0;
       break;
@@ -187,7 +194,7 @@ void loop() {
       break;
     case IDLE:
     default:
-      ramp_voltage = 0;
+      ramp_voltage = 0.0;
       break;
   }
 
@@ -197,6 +204,4 @@ void loop() {
 #if ENABLE_COMMANDER
   command.run();
 #endif
-//Serial.print(digitalRead(BUTTON1));
-//Serial.print(digitalRead(BUTTON2));
 }
