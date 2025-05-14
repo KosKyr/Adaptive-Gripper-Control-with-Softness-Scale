@@ -136,7 +136,7 @@ void loop() {
       motor.PID_velocity.I = 3.0;
       motor.PID_velocity.D = 0.01;
     }
-  } else {
+  } else if(digitalRead(BUTTON2) == LOW && returning_to_open){
     stable_count = 0;
     if (object_gripped && abs(target_voltage) > 0.2) {
       object_gripped = false;
