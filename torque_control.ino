@@ -11,6 +11,24 @@ TLE5012Sensor angleSensor(&SPI3W1, PIN_SPI1_SS0, PIN_SPI1_MISO, PIN_SPI1_MOSI, P
 BLDCMotor motor = BLDCMotor(MOTOR_POLE_PAIRS, MOTOR_PHASE_RESISTANCE, MOTOR_KV, MOTOR_PHASE_INDUCTANCE);
 BLDCDriver3PWM driver = BLDCDriver3PWM(PIN_U, PIN_V, PIN_W, PIN_EN_U, PIN_EN_V, PIN_EN_W);
 
+// PID control for magnetic pressure
+struct PID {
+  float Kp, Ki, Kd;
+  float prev_error = 0;
+  float integral = 0;
+
+  float compute(float setpoint, float measurement) {
+    float error = setpoint - measurement;
+    integral += error;
+    float derivative = error - prev_error;
+    prev_error = error;
+    return Kp * error + Ki * integral + Kd * derivative;
+  }
+};
+
+PID pressurePID = {1.0, 0.01, 0.05};
+float target_pressure = 2.0; // mT, safe max field
+
 // State + Mode
 enum GripperState { IDLE, CLOSING, OPENING, GRIPPED };
 GripperState state = IDLE;
@@ -29,16 +47,13 @@ bool object_gripped = false;
 
 #if ENABLE_COMMANDER
 Commander command = Commander(Serial);
-void onTarget(char* cmd) { command.scalar(&motor.target, cmd); }
-void onTorquePID(char* cmd) { command.pid(&motor.PID_torque, cmd); }
+void onTarget(char* cmd) { command.scalar(&target_pressure, cmd); }
 #endif
 
 #if ENABLE_MAGNETIC_SENSOR
 using namespace ifx::tlx493d;
 TLx493D_A2B6 dut(Wire1, TLx493D_IIC_ADDR_A0_e);
 double xOffset = 0, yOffset = 0, zOffset = 0;
-
-// For delta thresholding
 double lastFieldMag = 0;
 
 void calibrateSensor() {
@@ -80,8 +95,7 @@ void setup() {
   pinMode(MODE_SWITCH_PIN, INPUT_PULLUP);
 
 #if ENABLE_COMMANDER
-  command.add('T', onTarget, "target torque");
-  command.add('L', onTorquePID, "torque PID");
+  command.add('T', onTarget, "target pressure");
 #endif
 
 #if ENABLE_MAGNETIC_SENSOR
@@ -93,7 +107,6 @@ void setup() {
 
 void loop() {
   mode = digitalRead(MODE_SWITCH_PIN) == HIGH ? HARD : SOFT;
-  float max_voltage = (mode == HARD) ? -hard_limit : -soft_limit;
 
   if (digitalRead(BUTTON1) == LOW) {
     state = CLOSING;
@@ -113,7 +126,6 @@ void loop() {
   if (millis() - last_check > FIELD_SAMPLE_INTERVAL) {
     float angle_diff = abs(current_angle - last_angle);
     bool stall = angle_diff < 0.002;
-    bool pressure = false;
 
 #if ENABLE_MAGNETIC_SENSOR
     double x, y, z;
@@ -122,25 +134,19 @@ void loop() {
     x -= xOffset; y -= yOffset; z -= zOffset;
     field_mag = sqrt(x*x + y*y + z*z);
     double delta_field = abs(field_mag - lastFieldMag);
+    lastFieldMag = field_mag;
 
-    // Live feedback
     Serial.print("Mag: ");
     Serial.print(field_mag, 3);
     Serial.print(" mT | ΔMag: ");
     Serial.print(delta_field, 3);
     Serial.print(" | ");
 
-    pressure = field_mag > GRIP_FIELD_THRESHOLD && delta_field > GRIP_DELTA_THRESHOLD;
-    lastFieldMag = field_mag;
-#endif
-
-    if (state == CLOSING && (stall || pressure)) {
+    if (state == CLOSING && (stall || field_mag > target_pressure)) {
       object_gripped = true;
-      Serial.print("Object gripped via ");
-      if (stall) Serial.print("stall ");
-      if (pressure) Serial.print("pressure ");
-      Serial.println();
+      Serial.println("Object gripped via sensor");
     }
+#endif
 
     last_angle = current_angle;
     last_check = millis();
@@ -148,12 +154,15 @@ void loop() {
 
   switch (state) {
     case CLOSING:
-      if (ramp_voltage > max_voltage)
-        ramp_voltage -= ramp_step;
+#if ENABLE_MAGNETIC_SENSOR
+      ramp_voltage = pressurePID.compute(target_pressure, field_mag);
+      ramp_voltage = constrain(ramp_voltage, -hard_limit, 0);
+#else
+      ramp_voltage = -1.0;
+#endif
       break;
     case OPENING:
-      if (ramp_voltage < -max_voltage)
-        ramp_voltage += ramp_step;
+      ramp_voltage = 2.0;
       break;
     case GRIPPED:
       ramp_voltage = hold_voltage;
@@ -163,11 +172,6 @@ void loop() {
       ramp_voltage = 0;
       break;
   }
-
-#if ENABLE_READ_ANGLE
-  Serial.print("Angle: ");
-  Serial.println(current_angle);
-#endif
 
   motor.loopFOC();
   motor.move(ramp_voltage);
