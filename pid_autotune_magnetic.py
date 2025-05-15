@@ -1,99 +1,95 @@
-import sys
+import tkinter as tk
+from tkinter import messagebox
 import serial
 import json
 import threading
 import time
-from PyQt5.QtWidgets import *
-from PyQt5.QtCore import QTimer
-from PyQt5.QtGui import QKeySequence
 
-SERIAL_PORT = "/dev/ttyUSB0"  # Change to your port
+SERIAL_PORT = "/dev/ttyUSB0"  # Update for your system
 BAUDRATE = 115200
-pid_file = "pid_config.json"
+PID_FILE = "pid_config.json"
 
-class GripperGUI(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.serial = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=0.1)
-        self.init_ui()
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update_data)
-        self.timer.start(200)
+def read_serial_data(ser):
+    try:
+        line = ser.readline().decode().strip()
+        return line
+    except:
+        return ""
 
-    def init_ui(self):
-        self.setWindowTitle("Gripper Control + PID Autotune")
-        self.resize(400, 300)
+class GripperGUI:
+    def __init__(self, root):
+        self.root = root
+        self.ser = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=0.1)
 
-        # Labels
-        self.label_angle = QLabel("Angle: ---")
-        self.label_field = QLabel("Z Field: ---")
-        self.label_result = QLabel("Classification: ---")
+        self.root.title("Adaptive Gripper GUI + PID Autotune")
+        self.root.geometry("400x300")
 
-        # Buttons
-        self.btn_grip = QPushButton("Grip & Classify")
-        self.btn_release = QPushButton("Release")
-        self.btn_autotune = QPushButton("PID Autotune")
-        self.btn_apply_pid = QPushButton("Apply Saved PID")
+        self.angle_label = tk.Label(root, text="Angle: ---")
+        self.angle_label.pack()
+        self.zfield_label = tk.Label(root, text="Z Field: ---")
+        self.zfield_label.pack()
+        self.class_label = tk.Label(root, text="Classification: ---")
+        self.class_label.pack()
 
-        self.btn_grip.clicked.connect(self.send_grip)
-        self.btn_release.clicked.connect(self.send_release)
-        self.btn_autotune.clicked.connect(self.start_autotune)
-        self.btn_apply_pid.clicked.connect(self.apply_saved_pid)
+        self.btn_grip = tk.Button(root, text="Grip & Classify", command=self.send_grip)
+        self.btn_grip.pack(pady=5)
 
-        layout = QVBoxLayout()
-        layout.addWidget(self.label_angle)
-        layout.addWidget(self.label_field)
-        layout.addWidget(self.label_result)
-        layout.addWidget(self.btn_grip)
-        layout.addWidget(self.btn_release)
-        layout.addWidget(self.btn_autotune)
-        layout.addWidget(self.btn_apply_pid)
+        self.btn_release = tk.Button(root, text="Release", command=self.send_release)
+        self.btn_release.pack(pady=5)
 
-        self.setLayout(layout)
+        self.btn_autotune = tk.Button(root, text="Start PID Autotune", command=self.start_autotune)
+        self.btn_autotune.pack(pady=5)
+
+        self.btn_apply_pid = tk.Button(root, text="Apply Saved PID", command=self.apply_pid)
+        self.btn_apply_pid.pack(pady=5)
+
+        self.running = True
+        self.update_thread = threading.Thread(target=self.update_labels)
+        self.update_thread.start()
+
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
 
     def send_grip(self):
-        self.serial.write(b"G\n")  # Define 'G' in firmware to trigger classification
+        self.ser.write(b"G\n")
 
     def send_release(self):
-        self.serial.write(b"O\n")  # Define 'O' in firmware to trigger open
+        self.ser.write(b"O\n")
 
-    def update_data(self):
-        if self.serial.in_waiting:
-            line = self.serial.readline().decode().strip()
-            if line.startswith("A:"):
-                parts = line.split()
-                angle = parts[1]
-                z = parts[3]
-                self.label_angle.setText(f"Angle: {angle}")
-                self.label_field.setText(f"Z Field: {z}")
-            elif line.startswith("Class:"):
-                self.label_result.setText(f"Classification: {line.split(':')[1].strip()}")
+    def apply_pid(self):
+        try:
+            with open(PID_FILE, "r") as f:
+                pid = json.load(f)
+            cmd = f"P {pid['P']} {pid['I']} {pid['D']}\n"
+            self.ser.write(cmd.encode())
+            messagebox.showinfo("PID", f"Applied PID: {pid}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to apply PID: {e}")
 
     def start_autotune(self):
-        thread = threading.Thread(target=self.run_autotune)
-        thread.start()
+        threading.Thread(target=self.run_autotune).start()
 
     def run_autotune(self):
-        print("⚙️ PID Autotune running for 5s (press Ctrl+C to interrupt)...")
+        print("⚙️ Starting autotune (5s or press Enter in terminal to stop)...")
         t0 = time.time()
         data = []
-        try:
-            self.serial.write(b"T-2.0\n")  # Start torque
-            while time.time() - t0 < 5:
-                if self.serial.in_waiting:
-                    line = self.serial.readline().decode().strip()
-                    if line.startswith("A:"):
-                        parts = line.split()
-                        angle = float(parts[1])
-                        velocity = float(parts[5])
-                        data.append((angle, velocity))
-                time.sleep(0.05)
-        except KeyboardInterrupt:
-            print("⛔ Interrupted by user.")
-        finally:
-            self.serial.write(b"T0\n")  # Stop torque
+        self.ser.write(b"T-2.0\n")
 
-        # Naive PID estimator
+        try:
+            while time.time() - t0 < 5:
+                line = read_serial_data(self.ser)
+                if line.startswith("A:"):
+                    parts = line.split()
+                    angle = float(parts[1])
+                    velocity = float(parts[5])
+                    data.append((angle, velocity))
+                time.sleep(0.05)
+        finally:
+            self.ser.write(b"T0\n")
+
+        if not data:
+            messagebox.showerror("Autotune", "No data collected")
+            return
+
         angle_changes = [abs(data[i+1][0] - data[i][0]) for i in range(len(data)-1)]
         velocities = [v for _, v in data]
         p_est = max(angle_changes) * 0.5
@@ -101,21 +97,28 @@ class GripperGUI(QWidget):
         d_est = (max(velocities) - min(velocities)) * 0.05
 
         pid = {"P": round(p_est, 3), "I": round(i_est, 3), "D": round(d_est, 3)}
-        with open(pid_file, "w") as f:
+        with open(PID_FILE, "w") as f:
             json.dump(pid, f, indent=2)
-        print(f"✅ PID values saved: {pid}")
+        messagebox.showinfo("Autotune Done", f"PID saved: {pid}")
 
-    def apply_saved_pid(self):
-        try:
-            with open(pid_file, "r") as f:
-                pid = json.load(f)
-            self.serial.write(f"PID {pid['P']} {pid['I']} {pid['D']}\n".encode())
-            print(f"📦 Sent PID: {pid}")
-        except:
-            print("❌ Failed to read PID config file.")
+    def update_labels(self):
+        while self.running:
+            line = read_serial_data(self.ser)
+            if line.startswith("A:"):
+                parts = line.split()
+                self.angle_label.config(text=f"Angle: {parts[1]}")
+                self.zfield_label.config(text=f"Z Field: {parts[3]}")
+            elif line.startswith("Class:"):
+                self.class_label.config(text=f"Classification: {line.split(':')[1].strip()}")
+            time.sleep(0.1)
+
+    def close(self):
+        self.running = False
+        time.sleep(0.2)
+        self.ser.close()
+        self.root.destroy()
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    win = GripperGUI()
-    win.show()
-    sys.exit(app.exec_())
+    root = tk.Tk()
+    app = GripperGUI(root)
+    root.mainloop()
