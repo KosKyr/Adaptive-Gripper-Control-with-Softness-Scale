@@ -16,7 +16,7 @@ TLE5012Sensor sensor(&SPI3W1, PIN_SPI1_SS0, PIN_SPI1_MISO, PIN_SPI1_MOSI, PIN_SP
 BLDCMotor motor = BLDCMotor(7, 0.24, 360, 0.000133);
 BLDCDriver3PWM driver = BLDCDriver3PWM(11, 10, 9, 6, 5, 3);
 
-// --- TLx493D 3D Magnetic Sensor (pressure sensor) ---
+// --- TLx493D Magnetic Sensor ---
 using namespace ifx::tlx493d;
 TLx493D_A2B6 dut(Wire1, TLx493D_IIC_ADDR_A0_e);
 double xOffset = 0, yOffset = 0, zOffset = 0;
@@ -24,17 +24,22 @@ float magnetic_z = 0, magnetic_x = 0, magnetic_y = 0, magnetic_mag = 0;
 
 // --- Softness Classification Parameters ---
 float theta_start = 0;
-float softness_score = 0;
 bool evaluating_softness = false;
-const float GRIP_FORCE = -2.0;
+const float GRIP_FORCE = -3.5;
 const float MAGNETIC_TRIGGER = 1.0;
-const float SOFTNESS_THRESHOLD = 12;  // Adjusted for your measurements
 const int stable_threshold = 5;
+
+// --- Rate-of-Deformation Buffer ---
+const int RATE_BUFFER_SIZE = 10;
+float angle_history[RATE_BUFFER_SIZE];
+float mag_history[RATE_BUFFER_SIZE];
+float rate_history[RATE_BUFFER_SIZE];
+int rate_index = 0;
+bool rate_buffer_full = false;
 
 // --- Control ---
 float target_voltage = 0;
 float last_angle = 0;
-float velocity_threshold = 0.2;
 int stable_count = 0;
 unsigned long last_time = 0;
 float initial_open_angle = 0;
@@ -62,10 +67,7 @@ void doPID(char* cmd) {
 }
 
 void calibratePressureSensor(int samples = 20) {
-  double sumX = 0;
-  double sumY = 0;
-  double sumZ = 0;
-  double x, y, z;
+  double sumX = 0, sumY = 0, sumZ = 0, x, y, z;
   Serial.print("📏 Calibrating TLx493D Z-offset...");
   for (int i = 0; i < samples; i++) {
     dut.setSensitivity(TLx493D_FULL_RANGE_e);
@@ -133,60 +135,52 @@ void loop() {
 
   float current_angle = motor.sensor->getAngle();
   unsigned long current_time = millis();
-  float dt = (current_time - last_time) / 1000.0f;
   last_time = current_time;
-  float velocity = (dt > 0) ? abs(current_angle - last_angle) / dt : 0.0;
-  last_angle = current_angle;
 
-  // Read magnetic field
   double x, y, z;
   dut.setSensitivity(TLx493D_FULL_RANGE_e);
   dut.getMagneticField(&x, &y, &z);
   magnetic_z = z - zOffset;
   magnetic_x = x - xOffset;
   magnetic_y = y - yOffset;
-  magnetic_mag = sqrt(magnetic_z*magnetic_z + magnetic_y*magnetic_y + magnetic_x*magnetic_x);
+  magnetic_mag = sqrt(magnetic_z * magnetic_z + magnetic_y * magnetic_y + magnetic_x * magnetic_x);
 
-  // // Print debug info
-  // Serial.print("A: "); Serial.print(current_angle, 4);
-  // Serial.print(" Z: "); Serial.print(magnetic_z, 3);
-  // Serial.print(" V: "); Serial.println(velocity, 4);
+// Print debug info
+  Serial.print("A: "); Serial.print(current_angle, 4);
+  Serial.print(" Z: "); Serial.print(magnetic_z, 3);
+  Serial.print(" V: "); Serial.println(velocity, 4);
 
-  // Save open angle once
   if (!angle_saved) {
     initial_open_angle = current_angle;
     angle_saved = true;
   }
 
-  // Return to open position
   if (returning_to_open) {
     motor.controller = MotionControlType::angle;
     motor.move(initial_open_angle);
-
     if (abs(current_angle - initial_open_angle) < 0.05) {
       Serial.println("🔓 Returned to open position.");
       returning_to_open = false;
       motor.controller = MotionControlType::torque;
       target_voltage = 0;
     }
-
     command.run();
     return;
   }
 
-  // Detect one-time press for BUTTON1
   bool button1_state = digitalRead(BUTTON1);
   if (button1_last_state == HIGH && button1_state == LOW && !object_gripped && !evaluating_softness) {
     grip_requested = true;
   }
   button1_last_state = button1_state;
 
-  // Start softness evaluation
   if (grip_requested && !object_gripped) {
     if (!evaluating_softness) {
       evaluating_softness = true;
       theta_start = current_angle;
       stable_count = 0;
+      rate_index = 0;
+      rate_buffer_full = false;
       Serial.println("🟡 Evaluating softness...");
     }
 
@@ -194,13 +188,29 @@ void loop() {
     float angle_diff = abs(current_angle - theta_start);
 
     if (magnetic_mag > MAGNETIC_TRIGGER) {
-      softness_score = angle_diff / magnetic_mag;
-      stable_count++;
-      Serial.print("🟨 Score: "); Serial.print(softness_score, 2);
-      Serial.print(" Count: "); Serial.println(stable_count);
+      int prev_index = (rate_index == 0) ? RATE_BUFFER_SIZE - 1 : rate_index - 1;
+      float d_theta = angle_diff - angle_history[prev_index];
+      float d_mag = magnetic_mag - mag_history[prev_index];
+      float rate = (abs(d_mag) > 0.01) ? d_theta / d_mag : 0;
 
-      if (stable_count > stable_threshold) {
-        if (softness_score < SOFTNESS_THRESHOLD) {
+      angle_history[rate_index] = angle_diff;
+      mag_history[rate_index] = magnetic_mag;
+      rate_history[prev_index] = rate;
+
+      rate_index++;
+      if (rate_index >= RATE_BUFFER_SIZE) {
+        rate_buffer_full = true;
+        rate_index = 0;
+      }
+
+      stable_count++;
+
+      if (stable_count > stable_threshold && rate_buffer_full) {
+        int oldest = (rate_index + 1) % RATE_BUFFER_SIZE;
+        int newest = (rate_index - 1 + RATE_BUFFER_SIZE) % RATE_BUFFER_SIZE;
+        float trend = rate_history[newest] - rate_history[oldest];
+
+        if (trend < -0.01) {
           Serial.println("Class: SOFT");
         } else {
           Serial.println("Class: HARD");
@@ -209,6 +219,8 @@ void loop() {
         object_gripped = true;
         evaluating_softness = false;
         grip_requested = false;
+        rate_index = 0;
+        rate_buffer_full = false;
 
         target_voltage = adjustHoldingTorque(magnetic_mag);
         motor.PID_velocity.P = 0.15;
@@ -218,7 +230,6 @@ void loop() {
     }
   }
 
-  // Button2 pressed: open
   if (digitalRead(BUTTON2) == LOW && !returning_to_open) {
     Serial.println("🔁 Releasing object...");
     object_gripped = false;
@@ -233,7 +244,6 @@ void loop() {
     return;
   }
 
-  // Idle case
   if (!object_gripped && !evaluating_softness && !grip_requested) {
     target_voltage = 0;
   }
