@@ -30,9 +30,7 @@ class GripperGUI:
         self.setup_buttons()
         self.running = True
         self.autotune_running = False
-        self.update_thread = threading.Thread(target=self.update_labels)
-        self.update_thread.start()
-
+        self.root.after(100, self.update_labels)  # Main-thread safe label updates
         self.root.bind("<Escape>", lambda event: self.close())
 
     def setup_labels(self):
@@ -175,27 +173,30 @@ class GripperGUI:
         self.stop_button.config(state="disabled")
 
     def update_labels(self):
-        while self.running:
-            line = read_serial_data(self.ser) if self.ser else ""
-            if line.startswith("A:"):
-                try:
-                    parts = line.split()
-                    if len(parts) >= 6:
-                        self.angle_label.config(text=f"Angle: {parts[1]}")
-                        self.zfield_label.config(text=f"Z Field: {parts[3]}")
-                        self.velocity_label.config(text=f"Velocity: {parts[5]}")
-                except:
-                    pass
-            elif line.startswith("Class:"):
-                classification = line.split(":")[1].strip()
-                self.class_label.config(text=f"Classification: {classification}")
-                if classification == "SOFT":
-                    self.softness_bar["value"] = 100
-                    self.score_value_label.config(text="Soft")
-                elif classification == "HARD":
-                    self.softness_bar["value"] = 20
-                    self.score_value_label.config(text="Hard")
-            time.sleep(0.1)
+        if not self.running:
+            return
+
+        line = read_serial_data(self.ser) if self.ser else ""
+        if line.startswith("A:"):
+            try:
+                parts = line.split()
+                if len(parts) >= 6:
+                    self.angle_label.config(text=f"Angle: {parts[1]}")
+                    self.zfield_label.config(text=f"Z Field: {parts[3]}")
+                    self.velocity_label.config(text=f"Velocity: {parts[5]}")
+            except:
+                pass
+        elif line.startswith("Class:"):
+            classification = line.split(":")[1].strip()
+            self.class_label.config(text=f"Classification: {classification}")
+            if classification == "SOFT":
+                self.softness_bar["value"] = 100
+                self.score_value_label.config(text="Soft")
+            elif classification == "HARD":
+                self.softness_bar["value"] = 20
+                self.score_value_label.config(text="Hard")
+
+        self.root.after(100, self.update_labels)  # Safe recursive call
 
     def start_yolo_vision_mode(self):
         threading.Thread(target=self.run_yolo_vision_mode, daemon=True).start()
