@@ -128,20 +128,24 @@ void loop() {
   float velocity = (dt > 0) ? abs(current_angle - last_angle) / dt : 0.0;
   last_angle = current_angle;
 
+  // Read magnetic sensor
   double x, y, z;
   dut.setSensitivity(TLx493D_FULL_RANGE_e);
   dut.getMagneticField(&x, &y, &z);
   magnetic_z = z - zOffset;
 
+  // Print debug info
   Serial.print("A: "); Serial.print(current_angle, 4);
   Serial.print(" Z: "); Serial.print(magnetic_z, 3);
   Serial.print(" V: "); Serial.println(velocity, 4);
 
+  // Save initial angle once
   if (!angle_saved) {
     initial_open_angle = current_angle;
     angle_saved = true;
   }
 
+  // Return to open
   if (returning_to_open) {
     motor.controller = MotionControlType::angle;
     motor.move(initial_open_angle);
@@ -157,7 +161,17 @@ void loop() {
     return;
   }
 
-  if (digitalRead(BUTTON1) == LOW && !object_gripped) {
+  // --- Single press detection ---
+  static bool button1_last_state = HIGH;
+  bool button1_state = digitalRead(BUTTON1);
+
+  if (button1_last_state == HIGH && button1_state == LOW && !object_gripped && !evaluating_softness) {
+    grip_requested = true;
+  }
+  button1_last_state = button1_state;
+
+  // --- Classification process ---
+  if (grip_requested && !object_gripped) {
     if (!evaluating_softness) {
       evaluating_softness = true;
       theta_start = current_angle;
@@ -171,6 +185,8 @@ void loop() {
     if (magnetic_z > MAGNETIC_TRIGGER) {
       softness_score = angle_diff / magnetic_z;
       stable_count++;
+      Serial.print("🟨 Score: "); Serial.print(softness_score, 2);
+      Serial.print(" Count: "); Serial.println(stable_count);
 
       if (stable_count > stable_threshold) {
         if (softness_score > SOFTNESS_THRESHOLD) {
@@ -181,6 +197,8 @@ void loop() {
 
         object_gripped = true;
         evaluating_softness = false;
+        grip_requested = false;
+
         target_voltage = adjustHoldingTorque(magnetic_z);
 
         motor.PID_velocity.P = 0.15;
@@ -188,21 +206,29 @@ void loop() {
         motor.PID_velocity.D = 0.01;
       }
     }
-  } else if (digitalRead(BUTTON2) == LOW && !returning_to_open) {
+  }
+
+  // --- Button 2: Open ---
+  if (digitalRead(BUTTON2) == LOW && !returning_to_open) {
     Serial.println("🔁 Releasing object...");
     object_gripped = false;
-    stable_count = 0;
-    returning_to_open = true;
     evaluating_softness = false;
+    stable_count = 0;
+    grip_requested = false;
+    returning_to_open = true;
 
     motor.PID_velocity.P = 0.3;
     motor.PID_velocity.I = 5.0;
     motor.PID_velocity.D = 0.001;
     return;
-  } else if (!object_gripped && !evaluating_softness) {
+  }
+
+  // --- Idle case ---
+  if (!object_gripped && !evaluating_softness && !grip_requested) {
     target_voltage = 0;
   }
 
   motor.move(target_voltage);
   command.run();
 }
+
