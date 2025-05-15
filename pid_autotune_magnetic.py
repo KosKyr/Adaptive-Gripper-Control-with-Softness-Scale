@@ -5,7 +5,7 @@ import json
 import threading
 import time
 
-SERIAL_PORT = "/dev/ttyUSB0"  # Update for your system
+SERIAL_PORT = "COM3"  # Update for your system
 BAUDRATE = 115200
 PID_FILE = "pid_config.json"
 
