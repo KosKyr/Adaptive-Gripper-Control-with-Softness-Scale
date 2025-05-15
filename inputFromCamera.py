@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import os
 import time
+#import pyrealsense2 as rs
 
 class InputFromCamera:
     def __init__(self, use_webcam=True, dataset_path=None, use_rgbd=False):
@@ -34,8 +35,23 @@ class InputFromCamera:
                 raise RuntimeError("❌ Error: Could not read frame from webcam.")
 
             if self.use_rgbd:
-                # Placeholder: integrate actual RGBD camera API here
-                depth_frame = np.random.uniform(0.3, 1.5, rgb_frame.shape[:2]).astype(np.float32)
+                return
+                # if not hasattr(self, 'realsense_pipeline'):
+                #     self.realsense_pipeline = rs.pipeline()
+                #     config = rs.config()
+                #     config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+                #     config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+                #     self.realsense_pipeline.start(config)
+                #     self.realsense_align = rs.align(rs.stream.color)
+
+                # frames = self.realsense_pipeline.wait_for_frames()
+                # aligned_frames = self.realsense_align.process(frames)
+                # depth = aligned_frames.get_depth_frame()
+
+                # if not depth:
+                #     raise RuntimeError("❌ Failed to get RealSense depth frame.")
+
+                # depth_frame = np.asanyarray(depth.get_data()).astype(np.float32) / 1000.0  # in meters
             else:
                 depth_frame = np.zeros_like(rgb_frame[:, :, 0], dtype=np.float32)
 
