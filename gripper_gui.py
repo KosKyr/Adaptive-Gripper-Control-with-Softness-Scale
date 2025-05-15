@@ -4,18 +4,14 @@ import serial
 import json
 import threading
 import time
+import cv2
+import numpy as np
 from PIL import Image, ImageTk
+from pipeline import Pipeline
 
-SERIAL_PORT = "COM5"  # Update this to match your system
+SERIAL_PORT = "COM5"
 BAUDRATE = 115200
 PID_FILE = "pid_config.json"
-
-def read_serial_data(ser):
-    try:
-        line = ser.readline().decode().strip()
-        return line
-    except:
-        return ""
 
 class GripperGUI:
     def __init__(self, root):
@@ -27,30 +23,38 @@ class GripperGUI:
         try:
             self.ser = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=0.1)
         except serial.SerialException as e:
-            messagebox.showerror("Serial Port Error", f"Failed to open {SERIAL_PORT}: {e}")
-            self.root.destroy()
-            return
+            self.ser = None
+            messagebox.showwarning("Serial Port Warning", f"Serial not connected: {e}")
 
-        title = tk.Label(root, text="🦾 Gripper Interface + Softness Visualizer", font=("Helvetica", 26, "bold"),
+        self.setup_labels()
+        self.setup_buttons()
+        self.running = True
+        self.autotune_running = False
+        self.update_thread = threading.Thread(target=self.update_labels)
+        self.update_thread.start()
+
+        self.root.bind("<Escape>", lambda event: self.close())
+
+    def setup_labels(self):
+        title = tk.Label(self.root, text="🧫 Gripper Interface + Softness Visualizer", font=("Helvetica", 26, "bold"),
                          fg="#ecf0f1", bg="#2c3e50")
         title.pack(pady=20)
 
-        self.angle_label = tk.Label(root, text="Angle: ---", font=("Helvetica", 18), fg="#1abc9c", bg="#2c3e50")
+        self.angle_label = tk.Label(self.root, text="Angle: ---", font=("Helvetica", 18), fg="#1abc9c", bg="#2c3e50")
         self.angle_label.pack()
-        self.zfield_label = tk.Label(root, text="Z Field: ---", font=("Helvetica", 18), fg="#3498db", bg="#2c3e50")
+        self.zfield_label = tk.Label(self.root, text="Z Field: ---", font=("Helvetica", 18), fg="#3498db", bg="#2c3e50")
         self.zfield_label.pack()
-        self.velocity_label = tk.Label(root, text="Velocity: ---", font=("Helvetica", 18), fg="#f39c12", bg="#2c3e50")
+        self.velocity_label = tk.Label(self.root, text="Velocity: ---", font=("Helvetica", 18), fg="#f39c12", bg="#2c3e50")
         self.velocity_label.pack()
-        self.class_label = tk.Label(root, text="Classification: ---", font=("Helvetica", 18), fg="#e74c3c", bg="#2c3e50")
+        self.class_label = tk.Label(self.root, text="Classification: ---", font=("Helvetica", 18), fg="#e74c3c", bg="#2c3e50")
         self.class_label.pack(pady=10)
 
-        self.softness_label = tk.Label(root, text="Softness Indicator", font=("Helvetica", 18), fg="#ffffff", bg="#2c3e50")
+        self.softness_label = tk.Label(self.root, text="Softness Indicator", font=("Helvetica", 18), fg="#ffffff", bg="#2c3e50")
         self.softness_label.pack()
-
-        self.score_value_label = tk.Label(root, text="---", font=("Helvetica", 16, "bold"), fg="#9b59b6", bg="#2c3e50")
+        self.score_value_label = tk.Label(self.root, text="---", font=("Helvetica", 16, "bold"), fg="#9b59b6", bg="#2c3e50")
         self.score_value_label.pack()
 
-        self.softness_bar = ttk.Progressbar(root, orient="horizontal", length=400, mode="determinate")
+        self.softness_bar = ttk.Progressbar(self.root, orient="horizontal", length=400, mode="determinate")
         self.softness_bar.pack(pady=10)
         self.softness_bar["value"] = 0
 
@@ -58,7 +62,13 @@ class GripperGUI:
         style.theme_use("default")
         style.configure("TProgressbar", foreground="#9b59b6", background="#9b59b6", thickness=30)
 
-        button_frame = tk.Frame(root, bg="#2c3e50")
+        self.timer_label = tk.Label(self.root, text="", font=("Helvetica", 14), fg="#ecf0f1", bg="#2c3e50")
+        self.timer_label.pack()
+        self.vision_msg_label = tk.Label(self.root, text="", font=("Helvetica", 16), fg="#ecf0f1", bg="#2c3e50")
+        self.vision_msg_label.pack(pady=10)
+
+    def setup_buttons(self):
+        button_frame = tk.Frame(self.root, bg="#2c3e50")
         button_frame.pack(pady=20)
 
         btn_style = {"font": ("Helvetica", 14, "bold"), "width": 20, "height": 2}
@@ -72,44 +82,31 @@ class GripperGUI:
         tk.Button(button_frame, text="Apply Saved PID", bg="#2980b9", fg="white", command=self.apply_pid,
                   **btn_style).grid(row=1, column=1, padx=10, pady=10)
 
-        self.autotune_running = False
-        self.timer_label = tk.Label(root, text="", font=("Helvetica", 14), fg="#ecf0f1", bg="#2c3e50")
-        self.timer_label.pack()
-
-        self.stop_button = tk.Button(root, text="Stop Autotune Early", bg="#e67e22", fg="white",
+        self.stop_button = tk.Button(self.root, text="Stop Autotune Early", bg="#e67e22", fg="white",
                                      font=("Helvetica", 12), command=self.stop_autotune, state="disabled")
         self.stop_button.pack(pady=5)
 
-        tk.Button(root, text="Exit Fullscreen / Quit", bg="#7f8c8d", fg="white", font=("Helvetica", 12),
+        tk.Button(self.root, text="Open Vision Mode (Press Q to Quit)", bg="#16a085", fg="white",
+                  font=("Helvetica", 14), command=self.start_yolo_vision_mode).pack(pady=5)
+
+        tk.Button(self.root, text="Exit Fullscreen / Quit", bg="#7f8c8d", fg="white", font=("Helvetica", 12),
                   command=self.close).pack(pady=10)
 
-        try:
-            image = Image.open(r"C:\Users\vasla\Downloads\test.png")  # Replace with your image path
-            image = image.resize((300, 200))
-            self.img = ImageTk.PhotoImage(image)
-            self.img_label = tk.Label(root, image=self.img, bg="#2c3e50")
-            self.img_label.pack(pady=20)
-        except Exception as e:
-            print(f"🖼️ Image load failed: {e}")
-
-        self.running = True
-        self.update_thread = threading.Thread(target=self.update_labels)
-        self.update_thread.start()
-
-        self.root.bind("<Escape>", lambda event: self.close())
-
     def send_grip(self):
-        self.ser.write(b"G\n")
+        if self.ser:
+            self.ser.write(b"G\n")
 
     def send_release(self):
-        self.ser.write(b"O\n")
+        if self.ser:
+            self.ser.write(b"O\n")
 
     def apply_pid(self):
         try:
             with open(PID_FILE, "r") as f:
                 pid = json.load(f)
             cmd = f"P {pid['P']} {pid['I']} {pid['D']}\n"
-            self.ser.write(cmd.encode())
+            if self.ser:
+                self.ser.write(cmd.encode())
             messagebox.showinfo("PID", f"Applied PID: {pid}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to apply PID: {e}")
@@ -117,41 +114,52 @@ class GripperGUI:
     def start_autotune(self):
         self.autotune_running = True
         self.stop_button.config(state="normal")
-        threading.Thread(target=self.run_autotune).start()
-
-    def stop_autotune(self):
-        self.autotune_running = False
-        self.stop_button.config(state="disabled")
-
-    def run_autotune(self):
-        duration = 100  # seconds
-        t0 = time.time()
-        data = []
-        self.ser.write(b"T-2.0\n")
+        self.autotune_data = []
+        self.autotune_start_time = time.time()
+        if self.ser:
+            self.ser.write(b"T-2.0\n")
         print("⚙️ Starting autotune (100s)...")
+        self.autotune_countdown()
 
-        while self.autotune_running and time.time() - t0 < duration:
-            elapsed = int(time.time() - t0)
-            remaining = duration - elapsed
-            self.timer_label.config(text=f"⏳ Time Remaining: {remaining}s")
+    def autotune_countdown(self):
+        if not self.autotune_running:
+            return
+
+        elapsed = int(time.time() - self.autotune_start_time)
+        remaining = 100 - elapsed
+        self.timer_label.config(text=f"⏳ Time Remaining: {remaining}s")
+
+        if remaining <= 0:
+            self.finish_autotune()
+            return
+
+        if self.ser:
             line = read_serial_data(self.ser)
             if line.startswith("A:"):
                 parts = line.split()
                 if len(parts) >= 6:
-                    angle = float(parts[1])
-                    velocity = float(parts[5])
-                    data.append((angle, velocity))
-            time.sleep(0.05)
+                    try:
+                        angle = float(parts[1])
+                        velocity = float(parts[5])
+                        self.autotune_data.append((angle, velocity))
+                    except:
+                        pass
+        self.root.after(1000, self.autotune_countdown)
 
-        self.ser.write(b"T0\n")
+    def finish_autotune(self):
         self.timer_label.config(text="")
         self.stop_button.config(state="disabled")
+        self.autotune_running = False
 
+        if self.ser:
+            self.ser.write(b"T0\n")
+
+        data = self.autotune_data
         if not data:
             messagebox.showerror("Autotune", "No data collected")
             return
 
-        angle_changes = [abs(data[i+1][0] - data[i][0]) for i in range(len(data)-1)]
+        angle_changes = [abs(data[i + 1][0] - data[i][0]) for i in range(len(data) - 1)]
         velocities = [v for _, v in data]
         p_est = max(angle_changes) * 0.5
         i_est = sum(velocities) * 0.1
@@ -162,9 +170,13 @@ class GripperGUI:
             json.dump(pid, f, indent=2)
         messagebox.showinfo("Autotune Done", f"PID saved: {pid}")
 
+    def stop_autotune(self):
+        self.autotune_running = False
+        self.stop_button.config(state="disabled")
+
     def update_labels(self):
         while self.running:
-            line = read_serial_data(self.ser)
+            line = read_serial_data(self.ser) if self.ser else ""
             if line.startswith("A:"):
                 try:
                     parts = line.split()
@@ -185,13 +197,42 @@ class GripperGUI:
                     self.score_value_label.config(text="Hard")
             time.sleep(0.1)
 
+    def start_yolo_vision_mode(self):
+        threading.Thread(target=self.run_yolo_vision_mode, daemon=True).start()
+
+    def run_yolo_vision_mode(self):
+        def gui_callback(msg):
+            self.vision_msg_label.config(text=msg)
+
+        pipe = Pipeline(
+            label_color=(0, 255, 0),
+            box_color=(0, 0, 255),
+            mask_color=(255, 0, 0),
+            alpha=0.5,
+            pad=0,
+            confidence_threeshold=0.25,
+            yolo_weights_path="yolo-weights/yolov8n.pt",
+            dataset_path="dataset/",
+            use_data_set=False,
+            filter_classes=["cell phone"],
+            callback=gui_callback
+        )
+        pipe.main()
+
     def close(self):
         self.running = False
         self.autotune_running = False
         time.sleep(0.2)
-        if hasattr(self, 'ser') and self.ser.is_open:
+        if self.ser and self.ser.is_open:
             self.ser.close()
         self.root.destroy()
+
+def read_serial_data(ser):
+    try:
+        line = ser.readline().decode().strip()
+        return line
+    except:
+        return ""
 
 if __name__ == "__main__":
     root = tk.Tk()
