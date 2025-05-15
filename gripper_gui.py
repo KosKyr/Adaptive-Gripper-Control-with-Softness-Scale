@@ -6,12 +6,13 @@ import threading
 import time
 import cv2
 import numpy as np
+import os
 from PIL import Image, ImageTk
 from pipeline import Pipeline
 
 SERIAL_PORT = "COM5"
 BAUDRATE = 115200
-PID_FILE = "pid_config.json"
+PID_FILE = os.path.join(os.path.expanduser("~"), "Documents", "pid_config.json")
 
 class GripperGUI:
     def __init__(self, root):
@@ -29,8 +30,9 @@ class GripperGUI:
         self.setup_labels()
         self.setup_buttons()
         self.running = True
-        self.autotune_running = False
-        self.root.after(100, self.update_labels)  # Main-thread safe label updates
+        self.update_thread = threading.Thread(target=self.update_labels)
+        self.update_thread.start()
+
         self.root.bind("<Escape>", lambda event: self.close())
 
     def setup_labels(self):
@@ -112,52 +114,43 @@ class GripperGUI:
     def start_autotune(self):
         self.autotune_running = True
         self.stop_button.config(state="normal")
-        self.autotune_data = []
-        self.autotune_start_time = time.time()
+        threading.Thread(target=self.run_autotune).start()
+
+    def stop_autotune(self):
+        self.autotune_running = False
+        self.stop_button.config(state="disabled")
+
+    def run_autotune(self):
+        duration = 100
+        t0 = time.time()
+        data = []
         if self.ser:
             self.ser.write(b"T-2.0\n")
-        print("⚙️ Starting autotune (100s)...")
-        self.autotune_countdown()
+        print("\u2699\ufe0f Starting autotune (100s)...")
 
-    def autotune_countdown(self):
-        if not self.autotune_running:
-            return
-
-        elapsed = int(time.time() - self.autotune_start_time)
-        remaining = 100 - elapsed
-        self.timer_label.config(text=f"⏳ Time Remaining: {remaining}s")
-
-        if remaining <= 0:
-            self.finish_autotune()
-            return
-
-        if self.ser:
-            line = read_serial_data(self.ser)
+        while self.autotune_running and time.time() - t0 < duration:
+            elapsed = int(time.time() - t0)
+            remaining = duration - elapsed
+            self.timer_label.config(text=f"\u23f3 Time Remaining: {remaining}s")
+            line = read_serial_data(self.ser) if self.ser else ""
             if line.startswith("A:"):
                 parts = line.split()
                 if len(parts) >= 6:
-                    try:
-                        angle = float(parts[1])
-                        velocity = float(parts[5])
-                        self.autotune_data.append((angle, velocity))
-                    except:
-                        pass
-        self.root.after(1000, self.autotune_countdown)
-
-    def finish_autotune(self):
-        self.timer_label.config(text="")
-        self.stop_button.config(state="disabled")
-        self.autotune_running = False
+                    angle = float(parts[1])
+                    velocity = float(parts[5])
+                    data.append((angle, velocity))
+            time.sleep(0.05)
 
         if self.ser:
             self.ser.write(b"T0\n")
+        self.timer_label.config(text="")
+        self.stop_button.config(state="disabled")
 
-        data = self.autotune_data
         if not data:
             messagebox.showerror("Autotune", "No data collected")
             return
 
-        angle_changes = [abs(data[i + 1][0] - data[i][0]) for i in range(len(data) - 1)]
+        angle_changes = [abs(data[i+1][0] - data[i][0]) for i in range(len(data)-1)]
         velocities = [v for _, v in data]
         p_est = max(angle_changes) * 0.5
         i_est = sum(velocities) * 0.1
@@ -166,37 +159,50 @@ class GripperGUI:
         pid = {"P": round(p_est, 3), "I": round(i_est, 3), "D": round(d_est, 3)}
         with open(PID_FILE, "w") as f:
             json.dump(pid, f, indent=2)
-        messagebox.showinfo("Autotune Done", f"PID saved: {pid}")
-
-    def stop_autotune(self):
-        self.autotune_running = False
-        self.stop_button.config(state="disabled")
+        print(f"[INFO] PID saved to: {PID_FILE}")
+        messagebox.showinfo("Autotune Done", f"PID saved:\n{pid}\n\nFile location:\n{PID_FILE}")
 
     def update_labels(self):
-        if not self.running:
-            return
+        while self.running:
+            line = read_serial_data(self.ser) if self.ser else ""
 
-        line = read_serial_data(self.ser) if self.ser else ""
-        if line.startswith("A:"):
+            if not line:
+                time.sleep(0.1)
+                continue
+
             try:
                 parts = line.split()
-                if len(parts) >= 6:
-                    self.angle_label.config(text=f"Angle: {parts[1]}")
-                    self.zfield_label.config(text=f"Z Field: {parts[3]}")
-                    self.velocity_label.config(text=f"Velocity: {parts[5]}")
-            except:
-                pass
-        elif line.startswith("Class:"):
-            classification = line.split(":")[1].strip()
-            self.class_label.config(text=f"Classification: {classification}")
-            if classification == "SOFT":
-                self.softness_bar["value"] = 100
-                self.score_value_label.config(text="Soft")
-            elif classification == "HARD":
-                self.softness_bar["value"] = 20
-                self.score_value_label.config(text="Hard")
+                angle, zfield, velocity, classification = None, None, None, None
 
-        self.root.after(100, self.update_labels)  # Safe recursive call
+                for part in parts:
+                    if part.startswith("A:"):
+                        angle = part.split(":")[1]
+                    elif part.startswith("Z:"):
+                        zfield = part.split(":")[1]
+                    elif part.startswith("V:"):
+                        velocity = part.split(":")[1]
+                    elif part.startswith("Class:"):
+                        classification = part.split(":")[1]
+
+                if angle is not None:
+                    self.angle_label.config(text=f"Angle: {angle}")
+                if zfield is not None:
+                    self.zfield_label.config(text=f"Z Field: {zfield}")
+                if velocity is not None:
+                    self.velocity_label.config(text=f"Velocity: {velocity}")
+                if classification is not None:
+                    self.class_label.config(text=f"Classification: {classification}")
+                    if classification == "SOFT":
+                        self.softness_bar["value"] = 100
+                        self.score_value_label.config(text="Soft")
+                    elif classification == "HARD":
+                        self.softness_bar["value"] = 20
+                        self.score_value_label.config(text="Hard")
+
+            except Exception as e:
+                print(f"[Parse error] {e} | Line: {line}")
+
+            time.sleep(0.1)
 
     def start_yolo_vision_mode(self):
         threading.Thread(target=self.run_yolo_vision_mode, daemon=True).start()
