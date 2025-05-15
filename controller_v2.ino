@@ -45,20 +45,28 @@ bool returning_to_open = false;
 // --- Commander ---
 Commander command = Commander(Serial);
 void doTarget(char* cmd) { command.scalar(&target_voltage, cmd); }
+void doGrip(char* cmd) { digitalWrite(BUTTON1, LOW); }
+void doOpen(char* cmd) { digitalWrite(BUTTON2, LOW); }
+void doPID(char* cmd) {
+  float p = atof(strtok(cmd, " "));
+  float i = atof(strtok(NULL, " "));
+  float d = atof(strtok(NULL, " "));
+  motor.PID_velocity.P = p;
+  motor.PID_velocity.I = i;
+  motor.PID_velocity.D = d;
+  Serial.println("✅ PID updated from GUI");
+}
 
-// --- Calibration of zOffset ---
 void calibratePressureSensor(int samples = 100) {
   double sumZ = 0;
   double x, y, z;
-
   Serial.print("📏 Calibrating TLx493D Z-offset...");
   for (int i = 0; i < samples; i++) {
     dut.setSensitivity(TLx493D_FULL_RANGE_e);
     dut.getMagneticField(&x, &y, &z);
     sumZ += z;
-    delay(5);  // small delay for stability
+    delay(5);
   }
-
   zOffset = sumZ / samples;
   Serial.print(" Done. zOffset = ");
   Serial.println(zOffset, 4);
@@ -88,17 +96,20 @@ void setup() {
   motor.initFOC();
 
   dut.begin();
-  calibratePressureSensor(); // 🔧 Auto-calibration of zOffset
+  calibratePressureSensor();
 
   pinMode(BUTTON1, INPUT_PULLUP);
   pinMode(BUTTON2, INPUT_PULLUP);
+
   command.add('T', doTarget, "target voltage");
+  command.add('G', doGrip, "GUI grip");
+  command.add('O', doOpen, "GUI open");
+  command.add('P', doPID, "Set PID via GUI");
 
   Serial.println("✅ Gripper ready. Press button 1 to grip and classify.");
   delay(1000);
 }
 
-// --- Dynamic holding torque based on pressure ---
 float adjustHoldingTorque(float z) {
   const float MIN_HOLD = -0.2;
   const float MAX_HOLD = -1.0;
@@ -117,19 +128,20 @@ void loop() {
   float velocity = (dt > 0) ? abs(current_angle - last_angle) / dt : 0.0;
   last_angle = current_angle;
 
-  // --- Read TLx493D Z-axis field ---
   double x, y, z;
   dut.setSensitivity(TLx493D_FULL_RANGE_e);
   dut.getMagneticField(&x, &y, &z);
   magnetic_z = z - zOffset;
 
-  // Save initial open angle
+  Serial.print("A: "); Serial.print(current_angle, 4);
+  Serial.print(" Z: "); Serial.print(magnetic_z, 3);
+  Serial.print(" V: "); Serial.println(velocity, 4);
+
   if (!angle_saved) {
     initial_open_angle = current_angle;
     angle_saved = true;
   }
 
-  // --- Return to initial open position ---
   if (returning_to_open) {
     motor.controller = MotionControlType::angle;
     motor.move(initial_open_angle);
@@ -145,7 +157,6 @@ void loop() {
     return;
   }
 
-  // --- Button 1 (Grip + Classify) ---
   if (digitalRead(BUTTON1) == LOW && !object_gripped) {
     if (!evaluating_softness) {
       evaluating_softness = true;
@@ -155,7 +166,6 @@ void loop() {
     }
 
     target_voltage = GRIP_FORCE;
-
     float angle_diff = abs(current_angle - theta_start);
 
     if (magnetic_z > MAGNETIC_TRIGGER) {
@@ -164,43 +174,32 @@ void loop() {
 
       if (stable_count > stable_threshold) {
         if (softness_score > SOFTNESS_THRESHOLD) {
-          Serial.println("🟢 Object classified as: SOFT");
+          Serial.println("Class: SOFT");
         } else {
-          Serial.println("🔵 Object classified as: HARD");
+          Serial.println("Class: HARD");
         }
 
         object_gripped = true;
         evaluating_softness = false;
-
-        // switch to dynamic hold
         target_voltage = adjustHoldingTorque(magnetic_z);
 
-        // optional: softer PID
         motor.PID_velocity.P = 0.15;
         motor.PID_velocity.I = 3.0;
         motor.PID_velocity.D = 0.01;
       }
     }
-  }
-
-  // --- Button 2 (Open) ---
-  else if (digitalRead(BUTTON2) == LOW && !returning_to_open) {
+  } else if (digitalRead(BUTTON2) == LOW && !returning_to_open) {
     Serial.println("🔁 Releasing object...");
     object_gripped = false;
     stable_count = 0;
     returning_to_open = true;
     evaluating_softness = false;
 
-    // restore default PID
     motor.PID_velocity.P = 0.3;
     motor.PID_velocity.I = 5.0;
     motor.PID_velocity.D = 0.001;
-
     return;
-  }
-
-  // --- Default idle behavior ---
-  else if (!object_gripped && !evaluating_softness) {
+  } else if (!object_gripped && !evaluating_softness) {
     target_voltage = 0;
   }
 
