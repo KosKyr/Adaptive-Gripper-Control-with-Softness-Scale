@@ -5,7 +5,7 @@ import json
 import threading
 import time
 
-SERIAL_PORT = "COM3"  # Update for your system
+SERIAL_PORT = "COM4"  # Update this as needed
 BAUDRATE = 115200
 PID_FILE = "pid_config.json"
 
@@ -19,35 +19,45 @@ def read_serial_data(ser):
 class GripperGUI:
     def __init__(self, root):
         self.root = root
-        self.ser = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=0.1)
-
         self.root.title("Adaptive Gripper GUI + PID Autotune")
-        self.root.geometry("400x300")
+        self.root.attributes('-fullscreen', True)
+        self.root.configure(bg="#1e1e2f")
 
-        self.angle_label = tk.Label(root, text="Angle: ---")
+        try:
+            self.ser = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=0.1)
+        except serial.SerialException as e:
+            messagebox.showerror("Serial Port Error", f"Failed to open {SERIAL_PORT}: {e}")
+            self.root.destroy()
+            return
+
+        tk.Label(root, text="Adaptive Gripper Control Interface", font=("Helvetica", 24, "bold"), fg="#ffffff", bg="#1e1e2f").pack(pady=20)
+
+        self.angle_label = tk.Label(root, text="Angle: ---", font=("Helvetica", 16), fg="#90ee90", bg="#1e1e2f")
         self.angle_label.pack()
-        self.zfield_label = tk.Label(root, text="Z Field: ---")
+        self.zfield_label = tk.Label(root, text="Z Field: ---", font=("Helvetica", 16), fg="#add8e6", bg="#1e1e2f")
         self.zfield_label.pack()
-        self.class_label = tk.Label(root, text="Classification: ---")
-        self.class_label.pack()
+        self.velocity_label = tk.Label(root, text="Velocity: ---", font=("Helvetica", 16), fg="#f0e68c", bg="#1e1e2f")
+        self.velocity_label.pack()
+        self.class_label = tk.Label(root, text="Classification: ---", font=("Helvetica", 16), fg="#ffcccb", bg="#1e1e2f")
+        self.class_label.pack(pady=10)
 
-        self.btn_grip = tk.Button(root, text="Grip & Classify", command=self.send_grip)
-        self.btn_grip.pack(pady=5)
+        button_frame = tk.Frame(root, bg="#1e1e2f")
+        button_frame.pack(pady=20)
 
-        self.btn_release = tk.Button(root, text="Release", command=self.send_release)
-        self.btn_release.pack(pady=5)
+        btn_style = {"font": ("Helvetica", 14, "bold"), "width": 20, "height": 2}
 
-        self.btn_autotune = tk.Button(root, text="Start PID Autotune", command=self.start_autotune)
-        self.btn_autotune.pack(pady=5)
+        tk.Button(button_frame, text="Grip & Classify", bg="#28a745", fg="white", command=self.send_grip, **btn_style).grid(row=0, column=0, padx=10, pady=10)
+        tk.Button(button_frame, text="Release", bg="#dc3545", fg="white", command=self.send_release, **btn_style).grid(row=0, column=1, padx=10, pady=10)
+        tk.Button(button_frame, text="Start PID Autotune", bg="#ffc107", fg="black", command=self.start_autotune, **btn_style).grid(row=1, column=0, padx=10, pady=10)
+        tk.Button(button_frame, text="Apply Saved PID", bg="#007bff", fg="white", command=self.apply_pid, **btn_style).grid(row=1, column=1, padx=10, pady=10)
 
-        self.btn_apply_pid = tk.Button(root, text="Apply Saved PID", command=self.apply_pid)
-        self.btn_apply_pid.pack(pady=5)
+        tk.Button(root, text="Exit Fullscreen / Quit", bg="#6c757d", fg="white", font=("Helvetica", 12), command=self.close).pack(pady=10)
 
         self.running = True
         self.update_thread = threading.Thread(target=self.update_labels)
         self.update_thread.start()
 
-        self.root.protocol("WM_DELETE_WINDOW", self.close)
+        self.root.bind("<Escape>", lambda event: self.close())
 
     def send_grip(self):
         self.ser.write(b"G\n")
@@ -69,7 +79,7 @@ class GripperGUI:
         threading.Thread(target=self.run_autotune).start()
 
     def run_autotune(self):
-        print("⚙️ Starting autotune (5s or press Enter in terminal to stop)...")
+        print("⚙️ Starting autotune (5s)...")
         t0 = time.time()
         data = []
         self.ser.write(b"T-2.0\n")
@@ -105,17 +115,23 @@ class GripperGUI:
         while self.running:
             line = read_serial_data(self.ser)
             if line.startswith("A:"):
-                parts = line.split()
-                self.angle_label.config(text=f"Angle: {parts[1]}")
-                self.zfield_label.config(text=f"Z Field: {parts[3]}")
+                try:
+                    parts = line.split()
+                    self.angle_label.config(text=f"Angle: {parts[1]}")
+                    self.zfield_label.config(text=f"Z Field: {parts[3]}")
+                    self.velocity_label.config(text=f"Velocity: {parts[5]}")
+                except:
+                    pass
             elif line.startswith("Class:"):
-                self.class_label.config(text=f"Classification: {line.split(':')[1].strip()}")
+                classification = line.split(":")[1].strip()
+                self.class_label.config(text=f"Classification: {classification}")
             time.sleep(0.1)
 
     def close(self):
         self.running = False
         time.sleep(0.2)
-        self.ser.close()
+        if hasattr(self, 'ser') and self.ser.is_open:
+            self.ser.close()
         self.root.destroy()
 
 if __name__ == "__main__":
