@@ -91,48 +91,97 @@ class GripperGUI:
         tk.Button(self.root, text="Exit Fullscreen / Quit", bg="#7f8c8d", fg="white", font=("Helvetica", 12),
                   command=self.close).pack(pady=10)
 
+    def send_grip(self):
+        if self.ser:
+            self.ser.write(b"G\n")
+
+    def send_release(self):
+        if self.ser:
+            self.ser.write(b"O\n")
+
+    def apply_pid(self):
+        try:
+            with open(PID_FILE, "r") as f:
+                pid = json.load(f)
+            cmd = f"P {pid['P']} {pid['I']} {pid['D']}\n"
+            if self.ser:
+                self.ser.write(cmd.encode())
+            messagebox.showinfo("PID", f"Applied PID: {pid}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to apply PID: {e}")
+
+    def start_autotune(self):
+        self.autotune_running = True
+        self.stop_button.config(state="normal")
+        threading.Thread(target=self.run_autotune).start()
+
+    def stop_autotune(self):
+        self.autotune_running = False
+        self.stop_button.config(state="disabled")
+
+    def run_autotune(self):
+        duration = 100
+        t0 = time.time()
+        data = []
+        if self.ser:
+            self.ser.write(b"T-2.0\n")
+        print("\u2699\ufe0f Starting autotune (100s)...")
+
+        while self.autotune_running and time.time() - t0 < duration:
+            elapsed = int(time.time() - t0)
+            remaining = duration - elapsed
+            self.timer_label.config(text=f"\u23f3 Time Remaining: {remaining}s")
+            line = read_serial_data(self.ser) if self.ser else ""
+            if line.startswith("A:"):
+                parts = line.split()
+                if len(parts) >= 6:
+                    angle = float(parts[1])
+                    velocity = float(parts[5])
+                    data.append((angle, velocity))
+            time.sleep(0.05)
+
+        if self.ser:
+            self.ser.write(b"T0\n")
+        self.timer_label.config(text="")
+        self.stop_button.config(state="disabled")
+
+        if not data:
+            messagebox.showerror("Autotune", "No data collected")
+            return
+
+        angle_changes = [abs(data[i+1][0] - data[i][0]) for i in range(len(data)-1)]
+        velocities = [v for _, v in data]
+        p_est = max(angle_changes) * 0.5
+        i_est = sum(velocities) * 0.1
+        d_est = (max(velocities) - min(velocities)) * 0.05
+
+        pid = {"P": round(p_est, 3), "I": round(i_est, 3), "D": round(d_est, 3)}
+        with open(PID_FILE, "w") as f:
+            json.dump(pid, f, indent=2)
+        messagebox.showinfo("Autotune Done", f"PID saved: {pid}")
+
     def update_labels(self):
         while self.running:
             line = read_serial_data(self.ser) if self.ser else ""
-            if not line:
-                time.sleep(0.05)
-                continue
-
-            print("Serial:", line)  # Debug print, can be commented out
-
             if line.startswith("A:"):
                 try:
-                    # Expected format: A: <angle> Z: <z_field> V: <velocity>
-                    tokens = line.replace(":", "").split()
-                    angle = tokens[1]
-                    zfield = tokens[3]
-                    velocity = tokens[5]
-
-                    self.angle_label.config(text=f"Angle: {angle}")
-                    self.zfield_label.config(text=f"Z Field: {zfield}")
-                    self.velocity_label.config(text=f"Velocity: {velocity}")
-                except Exception as e:
-                    print(f"[ERROR] Failed to parse sensor data: {e} - Line: {line}")
-
-            elif "class" in line.lower():
-                try:
-                    classification = line.split(":")[1].strip().upper()
-                    self.class_label.config(text=f"Classification: {classification}")
-
-                    if classification == "SOFT":
-                        self.softness_bar["value"] = 100
-                        self.score_value_label.config(text="🟢 Soft Object")
-                    elif classification == "HARD":
-                        self.softness_bar["value"] = 20
-                        self.score_value_label.config(text="🔴 Hard Object")
-                    else:
-                        self.softness_bar["value"] = 50
-                        self.score_value_label.config(text=f"⚪ Unknown ({classification})")
-                except Exception as e:
-                    print(f"[ERROR] Failed to parse classification: {e} - Line: {line}")
-
+                    parts = line.split()
+                    if len(parts) >= 6:
+                        self.angle_label.config(text=f"Angle: {parts[1]}")
+                        self.zfield_label.config(text=f"Z Field: {parts[3]}")
+                        self.velocity_label.config(text=f"Velocity: {parts[5]}")
+                except:
+                    pass
+            elif line.startswith("Class:"):
+                classification = line.split(":")[1].strip()
+                self.class_label.config(text=f"Classification: {classification}")
+                if classification == "SOFT":
+                    self.softness_bar["value"] = 100
+                    self.score_value_label.config(text="Soft")
+                elif classification == "HARD":
+                    self.softness_bar["value"] = 20
+                    self.score_value_label.config(text="Hard")
             time.sleep(0.1)
-
 
     def start_yolo_vision_mode(self):
         threading.Thread(target=self.run_yolo_vision_mode, daemon=True).start()
