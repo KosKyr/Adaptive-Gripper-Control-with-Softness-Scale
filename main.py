@@ -7,7 +7,7 @@ if __name__ == "__main__":
         mask_color=(255, 0, 0),
         alpha=0.5,
         pad=0,
-        confidence_threeshold=0.25,
+        confidence_threeshold=0.5,
         yolo_weights_path="yolo-weights/yolov8n.pt",
         dataset_path="dataset/",
         use_data_set=False,
