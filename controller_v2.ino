@@ -46,6 +46,24 @@ bool returning_to_open = false;
 Commander command = Commander(Serial);
 void doTarget(char* cmd) { command.scalar(&target_voltage, cmd); }
 
+// --- Calibration of zOffset ---
+void calibratePressureSensor(int samples = 100) {
+  double sumZ = 0;
+  double x, y, z;
+
+  Serial.print("📏 Calibrating TLx493D Z-offset...");
+  for (int i = 0; i < samples; i++) {
+    dut.setSensitivity(TLx493D_FULL_RANGE_e);
+    dut.getMagneticField(&x, &y, &z);
+    sumZ += z;
+    delay(5);  // small delay for stability
+  }
+
+  zOffset = sumZ / samples;
+  Serial.print(" Done. zOffset = ");
+  Serial.println(zOffset, 4);
+}
+
 void setup() {
   Serial.begin(115200);
   SimpleFOCDebug::enable(&Serial);
@@ -69,7 +87,9 @@ void setup() {
   motor.init();
   motor.initFOC();
 
-  dut.begin(); // no calibration needed
+  dut.begin();
+  calibratePressureSensor(); // 🔧 Auto-calibration of zOffset
+
   pinMode(BUTTON1, INPUT_PULLUP);
   pinMode(BUTTON2, INPUT_PULLUP);
   command.add('T', doTarget, "target voltage");
