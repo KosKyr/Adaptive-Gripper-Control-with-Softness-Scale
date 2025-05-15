@@ -1,11 +1,12 @@
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import ttk, messagebox
 import serial
 import json
 import threading
 import time
+from PIL import Image, ImageTk  # Required for image support
 
-SERIAL_PORT = "COM4"  # Update this as needed
+SERIAL_PORT = "COM4"  # Update as needed
 BAUDRATE = 115200
 PID_FILE = "pid_config.json"
 
@@ -19,9 +20,9 @@ def read_serial_data(ser):
 class GripperGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Adaptive Gripper GUI + PID Autotune")
+        self.root.title("Adaptive Gripper Control with Softness Scale")
         self.root.attributes('-fullscreen', True)
-        self.root.configure(bg="#1e1e2f")
+        self.root.configure(bg="#2c3e50")
 
         try:
             self.ser = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=0.1)
@@ -30,28 +31,60 @@ class GripperGUI:
             self.root.destroy()
             return
 
-        tk.Label(root, text="Adaptive Gripper Control Interface", font=("Helvetica", 24, "bold"), fg="#ffffff", bg="#1e1e2f").pack(pady=20)
+        title = tk.Label(root, text="🦾 Gripper Interface + Softness Visualizer", font=("Helvetica", 26, "bold"),
+                         fg="#ecf0f1", bg="#2c3e50")
+        title.pack(pady=20)
 
-        self.angle_label = tk.Label(root, text="Angle: ---", font=("Helvetica", 16), fg="#90ee90", bg="#1e1e2f")
+        self.angle_label = tk.Label(root, text="Angle: ---", font=("Helvetica", 18), fg="#1abc9c", bg="#2c3e50")
         self.angle_label.pack()
-        self.zfield_label = tk.Label(root, text="Z Field: ---", font=("Helvetica", 16), fg="#add8e6", bg="#1e1e2f")
+        self.zfield_label = tk.Label(root, text="Z Field: ---", font=("Helvetica", 18), fg="#3498db", bg="#2c3e50")
         self.zfield_label.pack()
-        self.velocity_label = tk.Label(root, text="Velocity: ---", font=("Helvetica", 16), fg="#f0e68c", bg="#1e1e2f")
+        self.velocity_label = tk.Label(root, text="Velocity: ---", font=("Helvetica", 18), fg="#f39c12", bg="#2c3e50")
         self.velocity_label.pack()
-        self.class_label = tk.Label(root, text="Classification: ---", font=("Helvetica", 16), fg="#ffcccb", bg="#1e1e2f")
+        self.class_label = tk.Label(root, text="Classification: ---", font=("Helvetica", 18), fg="#e74c3c", bg="#2c3e50")
         self.class_label.pack(pady=10)
 
-        button_frame = tk.Frame(root, bg="#1e1e2f")
+        # --- Softness scale ---
+        self.softness_label = tk.Label(root, text="Softness Score", font=("Helvetica", 18), fg="#ffffff", bg="#2c3e50")
+        self.softness_label.pack()
+
+        self.score_value_label = tk.Label(root, text="0.00", font=("Helvetica", 16, "bold"), fg="#9b59b6", bg="#2c3e50")
+        self.score_value_label.pack()
+
+        self.softness_bar = ttk.Progressbar(root, orient="horizontal", length=400, mode="determinate")
+        self.softness_bar.pack(pady=10)
+        self.softness_bar["value"] = 0
+
+        style = ttk.Style()
+        style.theme_use("default")
+        style.configure("TProgressbar", foreground="#9b59b6", background="#9b59b6", thickness=30)
+
+        button_frame = tk.Frame(root, bg="#2c3e50")
         button_frame.pack(pady=20)
 
         btn_style = {"font": ("Helvetica", 14, "bold"), "width": 20, "height": 2}
 
-        tk.Button(button_frame, text="Grip & Classify", bg="#28a745", fg="white", command=self.send_grip, **btn_style).grid(row=0, column=0, padx=10, pady=10)
-        tk.Button(button_frame, text="Release", bg="#dc3545", fg="white", command=self.send_release, **btn_style).grid(row=0, column=1, padx=10, pady=10)
-        tk.Button(button_frame, text="Start PID Autotune", bg="#ffc107", fg="black", command=self.start_autotune, **btn_style).grid(row=1, column=0, padx=10, pady=10)
-        tk.Button(button_frame, text="Apply Saved PID", bg="#007bff", fg="white", command=self.apply_pid, **btn_style).grid(row=1, column=1, padx=10, pady=10)
+        tk.Button(button_frame, text="Grip & Classify", bg="#27ae60", fg="white", command=self.send_grip,
+                  **btn_style).grid(row=0, column=0, padx=10, pady=10)
+        tk.Button(button_frame, text="Release", bg="#c0392b", fg="white", command=self.send_release,
+                  **btn_style).grid(row=0, column=1, padx=10, pady=10)
+        tk.Button(button_frame, text="Start PID Autotune", bg="#f1c40f", fg="black", command=self.start_autotune,
+                  **btn_style).grid(row=1, column=0, padx=10, pady=10)
+        tk.Button(button_frame, text="Apply Saved PID", bg="#2980b9", fg="white", command=self.apply_pid,
+                  **btn_style).grid(row=1, column=1, padx=10, pady=10)
 
-        tk.Button(root, text="Exit Fullscreen / Quit", bg="#6c757d", fg="white", font=("Helvetica", 12), command=self.close).pack(pady=10)
+        tk.Button(root, text="Exit Fullscreen / Quit", bg="#7f8c8d", fg="white", font=("Helvetica", 12),
+                  command=self.close).pack(pady=10)
+
+        # --- Load image ---
+        try:
+            image = Image.open("C:\Users\vasla\Downloads\test.png")  # Replace with your image file
+            image = image.resize((300, 200))      # Adjust size as needed
+            self.img = ImageTk.PhotoImage(image)
+            self.img_label = tk.Label(root, image=self.img, bg="#2c3e50")
+            self.img_label.pack(pady=20)
+        except Exception as e:
+            print(f"🖼️ Image load failed: {e}")
 
         self.running = True
         self.update_thread = threading.Thread(target=self.update_labels)
@@ -89,9 +122,10 @@ class GripperGUI:
                 line = read_serial_data(self.ser)
                 if line.startswith("A:"):
                     parts = line.split()
-                    angle = float(parts[1])
-                    velocity = float(parts[5])
-                    data.append((angle, velocity))
+                    if len(parts) >= 6:
+                        angle = float(parts[1])
+                        velocity = float(parts[5])
+                        data.append((angle, velocity))
                 time.sleep(0.05)
         finally:
             self.ser.write(b"T0\n")
@@ -117,9 +151,19 @@ class GripperGUI:
             if line.startswith("A:"):
                 try:
                     parts = line.split()
-                    self.angle_label.config(text=f"Angle: {parts[1]}")
-                    self.zfield_label.config(text=f"Z Field: {parts[3]}")
-                    self.velocity_label.config(text=f"Velocity: {parts[5]}")
+                    if len(parts) >= 6:
+                        self.angle_label.config(text=f"Angle: {parts[1]}")
+                        self.zfield_label.config(text=f"Z Field: {parts[3]}")
+                        self.velocity_label.config(text=f"Velocity: {parts[5]}")
+                except:
+                    pass
+            elif "🟨 Score:" in line:
+                try:
+                    score_part = line.split("Score:")[1].split("Count:")[0].strip()
+                    score = float(score_part)
+                    self.score_value_label.config(text=f"{score:.2f}")
+                    bar_value = min(max(score * 8, 0), 100)
+                    self.softness_bar["value"] = bar_value
                 except:
                     pass
             elif line.startswith("Class:"):
