@@ -20,7 +20,7 @@ BLDCDriver3PWM driver = BLDCDriver3PWM(11, 10, 9, 6, 5, 3);
 using namespace ifx::tlx493d;
 TLx493D_A2B6 dut(Wire1, TLx493D_IIC_ADDR_A0_e);
 double xOffset = 0, yOffset = 0, zOffset = 0;
-float magnetic_z = 0;
+float magnetic_z = 0, magnetic_x = 0, magnetic_y = 0, magnetic_mag = 0;
 
 // --- Softness Classification Parameters ---
 float theta_start = 0;
@@ -28,7 +28,7 @@ float softness_score = 0;
 bool evaluating_softness = false;
 const float GRIP_FORCE = -2.0;
 const float MAGNETIC_TRIGGER = 1.0;
-const float SOFTNESS_THRESHOLD = 1.5;  // Adjusted for your measurements
+const float SOFTNESS_THRESHOLD = 12;  // Adjusted for your measurements
 const int stable_threshold = 5;
 
 // --- Control ---
@@ -61,7 +61,9 @@ void doPID(char* cmd) {
   Serial.println("✅ PID updated from GUI");
 }
 
-void calibratePressureSensor(int samples = 100) {
+void calibratePressureSensor(int samples = 20) {
+  double sumX = 0;
+  double sumY = 0;
   double sumZ = 0;
   double x, y, z;
   Serial.print("📏 Calibrating TLx493D Z-offset...");
@@ -69,9 +71,13 @@ void calibratePressureSensor(int samples = 100) {
     dut.setSensitivity(TLx493D_FULL_RANGE_e);
     dut.getMagneticField(&x, &y, &z);
     sumZ += z;
+    sumX += x;
+    sumY += y;
     delay(5);
   }
   zOffset = sumZ / samples;
+  xOffset = sumX / samples;
+  yOffset = sumY / samples;
   Serial.print(" Done. zOffset = ");
   Serial.println(zOffset, 4);
 }
@@ -137,11 +143,14 @@ void loop() {
   dut.setSensitivity(TLx493D_FULL_RANGE_e);
   dut.getMagneticField(&x, &y, &z);
   magnetic_z = z - zOffset;
+  magnetic_x = x - xOffset;
+  magnetic_y = y - yOffset;
+  magnetic_mag = sqrt(magnetic_z*magnetic_z + magnetic_y*magnetic_y + magnetic_x*magnetic_x);
 
-  // Print debug info
-  Serial.print("A: "); Serial.print(current_angle, 4);
-  Serial.print(" Z: "); Serial.print(magnetic_z, 3);
-  Serial.print(" V: "); Serial.println(velocity, 4);
+  // // Print debug info
+  // Serial.print("A: "); Serial.print(current_angle, 4);
+  // Serial.print(" Z: "); Serial.print(magnetic_z, 3);
+  // Serial.print(" V: "); Serial.println(velocity, 4);
 
   // Save open angle once
   if (!angle_saved) {
@@ -184,14 +193,14 @@ void loop() {
     target_voltage = GRIP_FORCE;
     float angle_diff = abs(current_angle - theta_start);
 
-    if (magnetic_z > MAGNETIC_TRIGGER) {
-      softness_score = angle_diff / magnetic_z;
+    if (magnetic_mag > MAGNETIC_TRIGGER) {
+      softness_score = angle_diff / magnetic_mag;
       stable_count++;
       Serial.print("🟨 Score: "); Serial.print(softness_score, 2);
       Serial.print(" Count: "); Serial.println(stable_count);
 
       if (stable_count > stable_threshold) {
-        if (softness_score > SOFTNESS_THRESHOLD) {
+        if (softness_score < SOFTNESS_THRESHOLD) {
           Serial.println("Class: SOFT");
         } else {
           Serial.println("Class: HARD");
