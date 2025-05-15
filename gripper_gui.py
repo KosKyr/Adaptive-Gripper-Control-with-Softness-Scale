@@ -4,9 +4,9 @@ import serial
 import json
 import threading
 import time
-from PIL import Image, ImageTk  # Required for image support
+from PIL import Image, ImageTk
 
-SERIAL_PORT = "COM4"  # Update as needed
+SERIAL_PORT = "COM4"  # Update this to match your system
 BAUDRATE = 115200
 PID_FILE = "pid_config.json"
 
@@ -45,10 +45,10 @@ class GripperGUI:
         self.class_label.pack(pady=10)
 
         # --- Softness scale ---
-        self.softness_label = tk.Label(root, text="Softness Score", font=("Helvetica", 18), fg="#ffffff", bg="#2c3e50")
+        self.softness_label = tk.Label(root, text="Softness Indicator", font=("Helvetica", 18), fg="#ffffff", bg="#2c3e50")
         self.softness_label.pack()
 
-        self.score_value_label = tk.Label(root, text="0.00", font=("Helvetica", 16, "bold"), fg="#9b59b6", bg="#2c3e50")
+        self.score_value_label = tk.Label(root, text="---", font=("Helvetica", 16, "bold"), fg="#9b59b6", bg="#2c3e50")
         self.score_value_label.pack()
 
         self.softness_bar = ttk.Progressbar(root, orient="horizontal", length=400, mode="determinate")
@@ -78,8 +78,8 @@ class GripperGUI:
 
         # --- Load image ---
         try:
-            image = Image.open("C:\Users\vasla\Downloads\test.png")  # Replace with your image file
-            image = image.resize((300, 200))      # Adjust size as needed
+            image = Image.open(r"C:\Users\vasla\Downloads\test.png")  # Replace with your image path
+            image = image.resize((300, 200))
             self.img = ImageTk.PhotoImage(image)
             self.img_label = tk.Label(root, image=self.img, bg="#2c3e50")
             self.img_label.pack(pady=20)
@@ -157,18 +157,15 @@ class GripperGUI:
                         self.velocity_label.config(text=f"Velocity: {parts[5]}")
                 except:
                     pass
-            elif "🟨 Score:" in line:
-                try:
-                    score_part = line.split("Score:")[1].split("Count:")[0].strip()
-                    score = float(score_part)
-                    self.score_value_label.config(text=f"{score:.2f}")
-                    bar_value = min(max(score * 8, 0), 100)
-                    self.softness_bar["value"] = bar_value
-                except:
-                    pass
             elif line.startswith("Class:"):
                 classification = line.split(":")[1].strip()
                 self.class_label.config(text=f"Classification: {classification}")
+                if classification == "SOFT":
+                    self.softness_bar["value"] = 100
+                    self.score_value_label.config(text="Soft")
+                elif classification == "HARD":
+                    self.softness_bar["value"] = 20
+                    self.score_value_label.config(text="Hard")
             time.sleep(0.1)
 
     def close(self):
