@@ -7,7 +7,7 @@ import time
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
-from pipeline import Pipeline
+from pipeline import Pipeline  # YOLO + mask pipeline
 
 SERIAL_PORT = "COM5"
 BAUDRATE = 115200
@@ -20,14 +20,16 @@ class GripperGUI:
         self.root.attributes('-fullscreen', True)
         self.root.configure(bg="#2c3e50")
 
+        # Attempt to connect to serial device
         try:
             self.ser = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=0.1)
         except serial.SerialException as e:
             self.ser = None
             messagebox.showwarning("Serial Port Warning", f"Serial not connected: {e}")
 
-        self.setup_labels()
-        self.setup_buttons()
+        self.setup_labels()   # Create UI text and softness indicator
+        self.setup_buttons()  # Create control buttons
+
         self.running = True
         self.update_thread = threading.Thread(target=self.update_labels)
         self.update_thread.start()
@@ -35,6 +37,7 @@ class GripperGUI:
         self.root.bind("<Escape>", lambda event: self.close())
 
     def setup_labels(self):
+        # Display angle, field, velocity, classification, and softness
         title = tk.Label(self.root, text="🧫 Gripper Interface + Softness Visualizer", font=("Helvetica", 26, "bold"),
                          fg="#ecf0f1", bg="#2c3e50")
         title.pack(pady=20)
@@ -57,6 +60,7 @@ class GripperGUI:
         self.softness_bar.pack(pady=10)
         self.softness_bar["value"] = 0
 
+        # Style for the progress bar
         style = ttk.Style()
         style.theme_use("default")
         style.configure("TProgressbar", foreground="#9b59b6", background="#9b59b6", thickness=30)
@@ -67,11 +71,13 @@ class GripperGUI:
         self.vision_msg_label.pack(pady=10)
 
     def setup_buttons(self):
+        # All command buttons for interacting with the gripper and GUI
         button_frame = tk.Frame(self.root, bg="#2c3e50")
         button_frame.pack(pady=20)
 
         btn_style = {"font": ("Helvetica", 14, "bold"), "width": 20, "height": 2}
 
+        # Button commands: grip, release, PID tuning, vision, exit
         tk.Button(button_frame, text="Grip & Classify", bg="#27ae60", fg="white", command=self.send_grip,
                   **btn_style).grid(row=0, column=0, padx=10, pady=10)
         tk.Button(button_frame, text="Release", bg="#c0392b", fg="white", command=self.send_release,
@@ -91,14 +97,17 @@ class GripperGUI:
         tk.Button(self.root, text="Exit Fullscreen / Quit", bg="#7f8c8d", fg="white", font=("Helvetica", 12),
                   command=self.close).pack(pady=10)
 
+    # Serial command to grip object
     def send_grip(self):
         if self.ser:
             self.ser.write(b"G\n")
 
+    # Serial command to release object
     def send_release(self):
         if self.ser:
             self.ser.write(b"O\n")
 
+    # Load PID values from file and send to microcontroller
     def apply_pid(self):
         try:
             with open(PID_FILE, "r") as f:
@@ -119,18 +128,19 @@ class GripperGUI:
         self.autotune_running = False
         self.stop_button.config(state="disabled")
 
+    # Simple PID autotune: monitor angle/velocity and estimate gains
     def run_autotune(self):
         duration = 100
         t0 = time.time()
         data = []
         if self.ser:
-            self.ser.write(b"T-2.0\n")
-        print("\u2699\ufe0f Starting autotune (100s)...")
+            self.ser.write(b"T-2.0\n")  # Apply small torque to test motion
+        print("⚙️ Starting autotune (100s)...")
 
         while self.autotune_running and time.time() - t0 < duration:
             elapsed = int(time.time() - t0)
             remaining = duration - elapsed
-            self.timer_label.config(text=f"\u23f3 Time Remaining: {remaining}s")
+            self.timer_label.config(text=f"⏳ Time Remaining: {remaining}s")
             line = read_serial_data(self.ser) if self.ser else ""
             if line.startswith("A:"):
                 parts = line.split()
@@ -141,7 +151,7 @@ class GripperGUI:
             time.sleep(0.05)
 
         if self.ser:
-            self.ser.write(b"T0\n")
+            self.ser.write(b"T0\n")  # Stop torque
         self.timer_label.config(text="")
         self.stop_button.config(state="disabled")
 
@@ -149,6 +159,7 @@ class GripperGUI:
             messagebox.showerror("Autotune", "No data collected")
             return
 
+        # Simple estimation of PID parameters
         angle_changes = [abs(data[i+1][0] - data[i][0]) for i in range(len(data)-1)]
         velocities = [v for _, v in data]
         p_est = max(angle_changes) * 0.5
@@ -160,6 +171,7 @@ class GripperGUI:
             json.dump(pid, f, indent=2)
         messagebox.showinfo("Autotune Done", f"PID saved: {pid}")
 
+    # Read serial input and update GUI
     def update_labels(self):
         while self.running:
             line = read_serial_data(self.ser) if self.ser else ""
@@ -183,6 +195,7 @@ class GripperGUI:
                     self.score_value_label.config(text="Hard")
             time.sleep(0.1)
 
+    # Start separate thread for vision processing
     def start_yolo_vision_mode(self):
         threading.Thread(target=self.run_yolo_vision_mode, daemon=True).start()
 
@@ -190,6 +203,7 @@ class GripperGUI:
         def gui_callback(msg):
             self.vision_msg_label.config(text=msg)
 
+        # Initialize and run pipeline with YOLO model
         pipe = Pipeline(
             label_color=(0, 255, 0),
             box_color=(0, 0, 255),
@@ -213,6 +227,7 @@ class GripperGUI:
             self.ser.close()
         self.root.destroy()
 
+# Read line from serial
 def read_serial_data(ser):
     try:
         line = ser.readline().decode().strip()
