@@ -84,7 +84,7 @@ void calibratePressureSensor(int samples = 20) {
 
 float adjustHoldingTorque(float z) {
   const float MIN_HOLD = -0.2;
-  const float MAX_HOLD = -1.0;
+  const float MAX_HOLD = -3;
   z = constrain(z, MAGNETIC_TRIGGER, 5.0);
   float norm = (z - MAGNETIC_TRIGGER) / (5.0 - MAGNETIC_TRIGGER);
   return MIN_HOLD + norm * (MAX_HOLD - MIN_HOLD);
@@ -210,7 +210,7 @@ void loop() {
         evaluating_softness = false;
         grip_requested = false;
 
-        target_voltage = adjustHoldingTorque(magnetic_z);
+        target_voltage = adjustHoldingTorque(magnetic_mag);
         motor.PID_velocity.P = 0.15;
         motor.PID_velocity.I = 3.0;
         motor.PID_velocity.D = 0.01;
