@@ -27,25 +27,29 @@ float theta_start = 0;
 float softness_score = 0;
 bool evaluating_softness = false;
 const float GRIP_FORCE = -2.0;
-const float MAGNETIC_TRIGGER = 1.0;     // mT to start classification
-const float SOFTNESS_THRESHOLD = 5.0;   // score > this = soft
+const float MAGNETIC_TRIGGER = 1.0;
+const float SOFTNESS_THRESHOLD = 1.5;  // Adjusted for your measurements
+const int stable_threshold = 5;
 
 // --- Control ---
 float target_voltage = 0;
 float last_angle = 0;
 float velocity_threshold = 0.2;
 int stable_count = 0;
-const int stable_threshold = 20;
-bool object_gripped = false;
 unsigned long last_time = 0;
 float initial_open_angle = 0;
 bool angle_saved = false;
 bool returning_to_open = false;
 
-// --- Commander ---
+// --- State Flags ---
+bool object_gripped = false;
+bool grip_requested = false;
+bool button1_last_state = HIGH;
+
+// --- Commander Interface ---
 Commander command = Commander(Serial);
 void doTarget(char* cmd) { command.scalar(&target_voltage, cmd); }
-void doGrip(char* cmd) { digitalWrite(BUTTON1, LOW); }
+void doGrip(char* cmd) { grip_requested = true; }
 void doOpen(char* cmd) { digitalWrite(BUTTON2, LOW); }
 void doPID(char* cmd) {
   float p = atof(strtok(cmd, " "));
@@ -70,6 +74,14 @@ void calibratePressureSensor(int samples = 100) {
   zOffset = sumZ / samples;
   Serial.print(" Done. zOffset = ");
   Serial.println(zOffset, 4);
+}
+
+float adjustHoldingTorque(float z) {
+  const float MIN_HOLD = -0.2;
+  const float MAX_HOLD = -1.0;
+  z = constrain(z, MAGNETIC_TRIGGER, 5.0);
+  float norm = (z - MAGNETIC_TRIGGER) / (5.0 - MAGNETIC_TRIGGER);
+  return MIN_HOLD + norm * (MAX_HOLD - MIN_HOLD);
 }
 
 void setup() {
@@ -110,14 +122,6 @@ void setup() {
   delay(1000);
 }
 
-float adjustHoldingTorque(float z) {
-  const float MIN_HOLD = -0.2;
-  const float MAX_HOLD = -1.0;
-  z = constrain(z, MAGNETIC_TRIGGER, 5.0);
-  float norm = (z - MAGNETIC_TRIGGER) / (5.0 - MAGNETIC_TRIGGER);
-  return MIN_HOLD + norm * (MAX_HOLD - MIN_HOLD);
-}
-
 void loop() {
   motor.loopFOC();
 
@@ -128,7 +132,7 @@ void loop() {
   float velocity = (dt > 0) ? abs(current_angle - last_angle) / dt : 0.0;
   last_angle = current_angle;
 
-  // Read magnetic sensor
+  // Read magnetic field
   double x, y, z;
   dut.setSensitivity(TLx493D_FULL_RANGE_e);
   dut.getMagneticField(&x, &y, &z);
@@ -139,13 +143,13 @@ void loop() {
   Serial.print(" Z: "); Serial.print(magnetic_z, 3);
   Serial.print(" V: "); Serial.println(velocity, 4);
 
-  // Save initial angle once
+  // Save open angle once
   if (!angle_saved) {
     initial_open_angle = current_angle;
     angle_saved = true;
   }
 
-  // Return to open
+  // Return to open position
   if (returning_to_open) {
     motor.controller = MotionControlType::angle;
     motor.move(initial_open_angle);
@@ -161,16 +165,14 @@ void loop() {
     return;
   }
 
-  // --- Single press detection ---
-  static bool button1_last_state = HIGH;
+  // Detect one-time press for BUTTON1
   bool button1_state = digitalRead(BUTTON1);
-
   if (button1_last_state == HIGH && button1_state == LOW && !object_gripped && !evaluating_softness) {
     grip_requested = true;
   }
   button1_last_state = button1_state;
 
-  // --- Classification process ---
+  // Start softness evaluation
   if (grip_requested && !object_gripped) {
     if (!evaluating_softness) {
       evaluating_softness = true;
@@ -200,7 +202,6 @@ void loop() {
         grip_requested = false;
 
         target_voltage = adjustHoldingTorque(magnetic_z);
-
         motor.PID_velocity.P = 0.15;
         motor.PID_velocity.I = 3.0;
         motor.PID_velocity.D = 0.01;
@@ -208,7 +209,7 @@ void loop() {
     }
   }
 
-  // --- Button 2: Open ---
+  // Button2 pressed: open
   if (digitalRead(BUTTON2) == LOW && !returning_to_open) {
     Serial.println("🔁 Releasing object...");
     object_gripped = false;
@@ -223,7 +224,7 @@ void loop() {
     return;
   }
 
-  // --- Idle case ---
+  // Idle case
   if (!object_gripped && !evaluating_softness && !grip_requested) {
     target_voltage = 0;
   }
@@ -231,4 +232,3 @@ void loop() {
   motor.move(target_voltage);
   command.run();
 }
-
