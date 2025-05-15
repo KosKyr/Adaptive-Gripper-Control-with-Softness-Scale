@@ -4,9 +4,9 @@ import serial
 import json
 import threading
 import time
-from PIL import Image, ImageTk  # Required for image support
+from PIL import Image, ImageTk
 
-SERIAL_PORT = "COM4"  # Update as needed
+SERIAL_PORT = "COM5"  # Update this to match your system
 BAUDRATE = 115200
 PID_FILE = "pid_config.json"
 
@@ -44,11 +44,10 @@ class GripperGUI:
         self.class_label = tk.Label(root, text="Classification: ---", font=("Helvetica", 18), fg="#e74c3c", bg="#2c3e50")
         self.class_label.pack(pady=10)
 
-        # --- Softness scale ---
-        self.softness_label = tk.Label(root, text="Softness Score", font=("Helvetica", 18), fg="#ffffff", bg="#2c3e50")
+        self.softness_label = tk.Label(root, text="Softness Indicator", font=("Helvetica", 18), fg="#ffffff", bg="#2c3e50")
         self.softness_label.pack()
 
-        self.score_value_label = tk.Label(root, text="0.00", font=("Helvetica", 16, "bold"), fg="#9b59b6", bg="#2c3e50")
+        self.score_value_label = tk.Label(root, text="---", font=("Helvetica", 16, "bold"), fg="#9b59b6", bg="#2c3e50")
         self.score_value_label.pack()
 
         self.softness_bar = ttk.Progressbar(root, orient="horizontal", length=400, mode="determinate")
@@ -73,13 +72,20 @@ class GripperGUI:
         tk.Button(button_frame, text="Apply Saved PID", bg="#2980b9", fg="white", command=self.apply_pid,
                   **btn_style).grid(row=1, column=1, padx=10, pady=10)
 
+        self.autotune_running = False
+        self.timer_label = tk.Label(root, text="", font=("Helvetica", 14), fg="#ecf0f1", bg="#2c3e50")
+        self.timer_label.pack()
+
+        self.stop_button = tk.Button(root, text="Stop Autotune Early", bg="#e67e22", fg="white",
+                                     font=("Helvetica", 12), command=self.stop_autotune, state="disabled")
+        self.stop_button.pack(pady=5)
+
         tk.Button(root, text="Exit Fullscreen / Quit", bg="#7f8c8d", fg="white", font=("Helvetica", 12),
                   command=self.close).pack(pady=10)
 
-        # --- Load image ---
         try:
-            image = Image.open("C:\Users\vasla\Downloads\test.png")  # Replace with your image file
-            image = image.resize((300, 200))      # Adjust size as needed
+            image = Image.open(r"C:\Users\vasla\Downloads\test.png")  # Replace with your image path
+            image = image.resize((300, 200))
             self.img = ImageTk.PhotoImage(image)
             self.img_label = tk.Label(root, image=self.img, bg="#2c3e50")
             self.img_label.pack(pady=20)
@@ -109,26 +115,37 @@ class GripperGUI:
             messagebox.showerror("Error", f"Failed to apply PID: {e}")
 
     def start_autotune(self):
+        self.autotune_running = True
+        self.stop_button.config(state="normal")
         threading.Thread(target=self.run_autotune).start()
 
+    def stop_autotune(self):
+        self.autotune_running = False
+        self.stop_button.config(state="disabled")
+
     def run_autotune(self):
-        print("⚙️ Starting autotune (5s)...")
+        duration = 100  # seconds
         t0 = time.time()
         data = []
         self.ser.write(b"T-2.0\n")
+        print("⚙️ Starting autotune (100s)...")
 
-        try:
-            while time.time() - t0 < 5:
-                line = read_serial_data(self.ser)
-                if line.startswith("A:"):
-                    parts = line.split()
-                    if len(parts) >= 6:
-                        angle = float(parts[1])
-                        velocity = float(parts[5])
-                        data.append((angle, velocity))
-                time.sleep(0.05)
-        finally:
-            self.ser.write(b"T0\n")
+        while self.autotune_running and time.time() - t0 < duration:
+            elapsed = int(time.time() - t0)
+            remaining = duration - elapsed
+            self.timer_label.config(text=f"⏳ Time Remaining: {remaining}s")
+            line = read_serial_data(self.ser)
+            if line.startswith("A:"):
+                parts = line.split()
+                if len(parts) >= 6:
+                    angle = float(parts[1])
+                    velocity = float(parts[5])
+                    data.append((angle, velocity))
+            time.sleep(0.05)
+
+        self.ser.write(b"T0\n")
+        self.timer_label.config(text="")
+        self.stop_button.config(state="disabled")
 
         if not data:
             messagebox.showerror("Autotune", "No data collected")
@@ -157,22 +174,20 @@ class GripperGUI:
                         self.velocity_label.config(text=f"Velocity: {parts[5]}")
                 except:
                     pass
-            elif "🟨 Score:" in line:
-                try:
-                    score_part = line.split("Score:")[1].split("Count:")[0].strip()
-                    score = float(score_part)
-                    self.score_value_label.config(text=f"{score:.2f}")
-                    bar_value = min(max(score * 8, 0), 100)
-                    self.softness_bar["value"] = bar_value
-                except:
-                    pass
             elif line.startswith("Class:"):
                 classification = line.split(":")[1].strip()
                 self.class_label.config(text=f"Classification: {classification}")
+                if classification == "SOFT":
+                    self.softness_bar["value"] = 100
+                    self.score_value_label.config(text="Soft")
+                elif classification == "HARD":
+                    self.softness_bar["value"] = 20
+                    self.score_value_label.config(text="Hard")
             time.sleep(0.1)
 
     def close(self):
         self.running = False
+        self.autotune_running = False
         time.sleep(0.2)
         if hasattr(self, 'ser') and self.ser.is_open:
             self.ser.close()
